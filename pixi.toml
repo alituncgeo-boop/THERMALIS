@@ -1,0 +1,29 @@
+[workspace]
+name = "thermalis"
+version = "0.1.0"
+description = "THERMALIS — Urban Climate Intelligence Framework"
+channels = ["conda-forge"]
+platforms = ["win-64", "linux-64", "osx-64", "osx-arm64"]
+
+[dependencies]
+python = "3.12.*"
+nodejs = "22.*"
+fastapi = ">=0.115"
+uvicorn = ">=0.30"
+pydantic = ">=2.7"
+platformdirs = ">=4.2"
+pytest = ">=8"
+httpx = ">=0.27"
+
+[tasks]
+# Arayüz bağımlılıklarını kur ve derle
+install-ui = { cmd = "npm ci", cwd = "frontend" }
+build-ui = { cmd = "npm run build", cwd = "frontend", depends-on = ["install-ui"] }
+# Programı başlat (tarayıcıda açılır)
+start = { cmd = "python -m thermalis start", cwd = "src", depends-on = ["build-ui"] }
+# Testler
+test = "pytest -q"
+test-ui = { cmd = "npm test", cwd = "frontend", depends-on = ["install-ui"] }
+# Geliştirme: arka uç ve arayüz ayrı ayrı (iki terminal)
+dev-api = { cmd = "python -m thermalis start --no-browser --reload", cwd = "src" }
+dev-ui = { cmd = "npm run dev", cwd = "frontend" }

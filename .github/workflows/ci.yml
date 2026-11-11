@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          cache: true
+          locked: true
+      - name: Python testleri
+        run: pixi run test
+      - name: Arayüz testleri (çeviri anahtarları dahil)
+        run: pixi run test-ui
+      - name: Arayüz derlemesi
+        run: pixi run build-ui

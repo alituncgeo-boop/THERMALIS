@@ -1,0 +1,48 @@
+# --- Ortam ---
+.pixi/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# --- Arayüz ---
+frontend/node_modules/
+frontend/dist/
+
+# --- Makineye özel ayarlar ---
+config.local.toml
+.env
+
+# --- VERİ ASLA REPOYA GİRMEZ ---
+# Veriler her makinede "veri kökü" klasöründe durur (Ayarlar ekranı).
+*.tif
+*.tiff
+*.gpkg
+*.gdb/
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.nc
+*.nc4
+*.h5
+*.hdf
+*.parquet
+*.geoparquet
+*.zip
+*.7z
+*.sqlite
+*.db
+*.xlsx
+*.csv
+!tests/fixtures/**/*.csv
+
+# --- İşletim sistemi ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

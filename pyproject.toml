@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "thermalis"
+version = "0.1.0"
+description = "THERMALIS — Urban Climate Intelligence Framework"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+  "pydantic>=2.7",
+  "platformdirs>=4.2",
+]
+
+[project.scripts]
+thermalis = "thermalis.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/thermalis"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -1,0 +1,102 @@
+{
+  "app": {
+    "tagline": "Urban Climate Intelligence Platform"
+  },
+  "home": {
+    "title_lead": "From Climate Data to",
+    "title_accent": "Climate Intelligence",
+    "subtitle": "A geospatial intelligence platform for climate-resilient cities",
+    "select_city": "Select city",
+    "create_city": "Create new city",
+    "no_projects": "No projects yet"
+  },
+  "modules": {
+    "data": "Data catalog and version management",
+    "analysis_lab": "Scientific climate analysis workspaces",
+    "risk_engine": "Neighborhood and district risk profiles",
+    "city3d": "Three-dimensional city model",
+    "intelligence": "Evidence-based natural language queries"
+  },
+  "domains": {
+    "heat": "Urban Heat Intelligence",
+    "drought": "Urban and Regional Drought Intelligence",
+    "flood": "Urban Flood Intelligence",
+    "coast": "Coastal Climate Intelligence",
+    "fire": "Wildfire and Urban Interface Intelligence",
+    "extremes": "Extreme Climate Events Intelligence"
+  },
+  "status": {
+    "not_started": "Not started",
+    "no_results": "No analysis results"
+  },
+  "common": {
+    "open_workspace": "Open workspace",
+    "back": "Back",
+    "cancel": "Cancel",
+    "create": "Create",
+    "save": "Save",
+    "saved": "Saved",
+    "settings": "Settings",
+    "home": "Home",
+    "language": "Language",
+    "active_project": "Active project",
+    "next_step": "Will be enabled in the next development step"
+  },
+  "project": {
+    "none_title": "No project selected",
+    "none_body": "Select or create a city project on the home screen to continue.",
+    "go_home": "Go to home",
+    "dialog_title": "New city project",
+    "name_label": "Project name",
+    "name_placeholder": "e.g. Istanbul Pilot",
+    "description_label": "Description (optional)",
+    "description_placeholder": "Scope of this project",
+    "data_root_note": "The project will be created in this data root: {{path}}"
+  },
+  "errors": {
+    "project_name_exists": "A project with this name already exists.",
+    "project_not_found": "Project not found.",
+    "data_root_not_absolute": "Enter a full folder path (e.g. D:\\THERMALIS_DATA).",
+    "data_root_not_writable": "This folder is not writable. Choose another folder.",
+    "validation": "The information entered is not valid.",
+    "network": "Cannot reach the server. Is THERMALIS running?",
+    "unknown": "An unexpected error occurred."
+  },
+  "pages": {
+    "data": {
+      "subtitle": "{{project}} data catalog and version management",
+      "add_dataset": "Add dataset",
+      "empty_title": "No registered data yet",
+      "empty_body": "Adding data and managing versions will arrive in the next development step of the DATA component. Every registered dataset will be listed here with its source, version, period and quality status."
+    },
+    "lab": {
+      "subtitle": "Scientific climate analysis workspaces for {{project}}",
+      "domain_empty_title": "This workspace is not ready yet",
+      "domain_empty_body": "Methodology, data requirements, checkpoints and quality checks will appear here once this module is developed."
+    },
+    "risk": {
+      "readiness_title": "Analysis readiness",
+      "readiness_subtitle": "Current status of available analysis results for integrated assessment.",
+      "readiness_note": "Analyses without results are not included in the assessment and are not treated as zero risk.",
+      "assessment_empty_title": "No assessment yet",
+      "assessment_empty_body": "An integrated assessment can be generated once at least one analysis module produces validated results."
+    },
+    "city3d": {
+      "empty_title": "City model not loaded yet",
+      "empty_body": "3D city geometry, neighborhood and district boundaries and risk layers will be displayed here once this component is developed."
+    },
+    "intelligence": {
+      "empty_title": "No results to query",
+      "empty_body": "Intelligence only queries published analysis and risk results; it does not produce results. You will be able to ask questions here once the first results are published.",
+      "input_placeholder": "Ask about districts, neighborhoods, risks or adaptation options…"
+    },
+    "settings": {
+      "language_help": "The interface and all outputs are provided in the selected language.",
+      "data_root_label": "Data root folder",
+      "data_root_help": "Data, catalogs and results are kept in this folder. It can differ on each computer: code lives on GitHub, data lives in this folder.",
+      "data_root_warning": "Changing the data root resets the active project selection.",
+      "default_badge": "Default",
+      "version": "Version"
+    }
+  }
+}

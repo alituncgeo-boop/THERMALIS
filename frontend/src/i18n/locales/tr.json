@@ -1,0 +1,102 @@
+{
+  "app": {
+    "tagline": "Kentsel İklim Zekâsı Platformu"
+  },
+  "home": {
+    "title_lead": "İklim Verisinden",
+    "title_accent": "İklim Zekâsına",
+    "subtitle": "İklime dirençli şehirler için mekânsal zekâ platformu",
+    "select_city": "Şehir seçin",
+    "create_city": "Yeni şehir oluştur",
+    "no_projects": "Henüz proje yok"
+  },
+  "modules": {
+    "data": "Veri kataloğu ve sürüm yönetimi",
+    "analysis_lab": "Bilimsel iklim analizi çalışma alanları",
+    "risk_engine": "Mahalle ve ilçe risk profilleri",
+    "city3d": "Üç boyutlu kent modeli",
+    "intelligence": "Kanıta dayalı doğal dil sorguları"
+  },
+  "domains": {
+    "heat": "Kentsel Isı Zekâsı",
+    "drought": "Kentsel ve Bölgesel Kuraklık Zekâsı",
+    "flood": "Kentsel Taşkın Zekâsı",
+    "coast": "Kıyı İklimi Zekâsı",
+    "fire": "Orman Yangını ve Kent Arayüzü Zekâsı",
+    "extremes": "Ekstrem İklim Olayları Zekâsı"
+  },
+  "status": {
+    "not_started": "Henüz başlamadı",
+    "no_results": "Analiz sonucu yok"
+  },
+  "common": {
+    "open_workspace": "Çalışma alanını aç",
+    "back": "Geri",
+    "cancel": "Vazgeç",
+    "create": "Oluştur",
+    "save": "Kaydet",
+    "saved": "Kaydedildi",
+    "settings": "Ayarlar",
+    "home": "Ana sayfa",
+    "language": "Dil",
+    "active_project": "Aktif proje",
+    "next_step": "Bir sonraki geliştirme adımında etkinleşecek"
+  },
+  "project": {
+    "none_title": "Proje seçilmedi",
+    "none_body": "Devam etmek için ana sayfadan bir şehir projesi seçin veya oluşturun.",
+    "go_home": "Ana sayfaya git",
+    "dialog_title": "Yeni şehir projesi",
+    "name_label": "Proje adı",
+    "name_placeholder": "örn. İstanbul Pilot",
+    "description_label": "Açıklama (isteğe bağlı)",
+    "description_placeholder": "Bu projenin kapsamı",
+    "data_root_note": "Proje şu veri kökünde oluşturulacak: {{path}}"
+  },
+  "errors": {
+    "project_name_exists": "Bu adda bir proje zaten var.",
+    "project_not_found": "Proje bulunamadı.",
+    "data_root_not_absolute": "Tam bir klasör yolu girin (örn. D:\\THERMALIS_DATA).",
+    "data_root_not_writable": "Bu klasöre yazılamıyor. Başka bir klasör seçin.",
+    "validation": "Girilen bilgiler geçersiz.",
+    "network": "Sunucuya ulaşılamadı. THERMALIS çalışıyor mu?",
+    "unknown": "Beklenmeyen bir hata oluştu."
+  },
+  "pages": {
+    "data": {
+      "subtitle": "{{project}} veri kataloğu ve sürüm yönetimi",
+      "add_dataset": "Veri ekle",
+      "empty_title": "Henüz kayıtlı veri yok",
+      "empty_body": "Veri ekleme ve sürüm yönetimi, DATA bileşeninin bir sonraki geliştirme adımında gelecek. Kayıtlı her veri seti burada kaynağı, sürümü, dönemi ve kalite durumuyla listelenecek."
+    },
+    "lab": {
+      "subtitle": "{{project}} için bilimsel iklim analizi çalışma alanları",
+      "domain_empty_title": "Bu çalışma alanı henüz hazır değil",
+      "domain_empty_body": "Metodoloji, veri gereksinimleri, checkpoint'ler ve kalite kontrolleri bu modül geliştirildiğinde burada yer alacak."
+    },
+    "risk": {
+      "readiness_title": "Analiz hazırlığı",
+      "readiness_subtitle": "Bütünleşik değerlendirme için mevcut analiz sonuçlarının durumu.",
+      "readiness_note": "Sonucu olmayan analizler değerlendirmeye dahil edilmez ve sıfır risk olarak kabul edilmez.",
+      "assessment_empty_title": "Henüz değerlendirme yok",
+      "assessment_empty_body": "Bütünleşik değerlendirme, en az bir analiz modülü doğrulanmış sonuç ürettiğinde oluşturulabilecek."
+    },
+    "city3d": {
+      "empty_title": "Kent modeli henüz yüklenmedi",
+      "empty_body": "3B kent geometrisi, mahalle ve ilçe sınırları ve risk katmanları bu bileşen geliştirildiğinde burada görüntülenecek."
+    },
+    "intelligence": {
+      "empty_title": "Sorgulanacak sonuç yok",
+      "empty_body": "Intelligence yalnızca yayımlanmış analiz ve risk sonuçlarını sorgular, sonuç üretmez. İlk sonuçlar yayımlandığında burada soru sorabileceksiniz.",
+      "input_placeholder": "İlçeler, mahalleler, riskler veya uyum seçenekleri hakkında sorun…"
+    },
+    "settings": {
+      "language_help": "Arayüz ve tüm çıktılar seçilen dilde verilir.",
+      "data_root_label": "Veri kökü klasörü",
+      "data_root_help": "Veriler, kataloglar ve sonuçlar bu klasörde tutulur. Her bilgisayarda farklı olabilir: kod GitHub'da, veri bu klasörde durur.",
+      "data_root_warning": "Veri kökünü değiştirirseniz aktif proje seçimi sıfırlanır.",
+      "default_badge": "Varsayılan",
+      "version": "Sürüm"
+    }
+  }
+}

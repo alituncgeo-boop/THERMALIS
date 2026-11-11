@@ -4,4 +4,42 @@
 
 Urban Climate Intelligence Framework — İstanbul pilotu, şehirden bağımsız mimari.
 
-Bileşenler: DATA · ANALYSIS LAB · RISK ENGINE · 3D CITY ENGINE · INTELLIGENCE
+Bileşenler: **DATA · ANALYSIS LAB · RISK ENGINE · 3D CITY ENGINE · INTELLIGENCE**
+
+## Bir bilgisayarda ilk kurulum (Windows)
+
+1. **pixi** kurun (Python, Node ve tüm kütüphaneleri o bilgisayara kilitli sürümlerle kuran araç).
+   PowerShell'i açıp şunu çalıştırın, sonra PowerShell'i kapatıp yeniden açın:
+   ```powershell
+   powershell -ExecutionPolicy ByPass -c "irm -useb https://pixi.sh/install.ps1 | iex"
+   ```
+2. **GitHub Desktop** ile repoyu bilgisayara indirin: *File → Clone repository → THERMALIS*.
+3. Repo klasöründe PowerShell açın (GitHub Desktop: *Repository → Open in Command Prompt / PowerShell*) ve çalıştırın:
+   ```powershell
+   pixi run start
+   ```
+   İlk çalıştırma kurulum yaptığı için birkaç dakika sürer. Program tarayıcıda
+   `http://127.0.0.1:8765` adresinde açılır. Durdurmak için PowerShell'de `Ctrl+C`.
+
+## Veri nerede durur?
+
+Kod GitHub'da, **veri her bilgisayarın kendi veri kökü klasöründe** durur.
+Varsayılan: kullanıcı klasörünüzde `THERMALIS_DATA`. Programda *Ayarlar* ekranından
+değiştirilebilir (örn. `D:\THERMALIS_DATA`). Veri dosyaları asla repoya eklenmez.
+
+> Veri kökünü OneDrive / Google Drive gibi eşitlenen klasörlere koymayın.
+
+## Güncelleme
+
+GitHub Desktop'ta *Fetch origin → Pull*, ardından tekrar `pixi run start`.
+
+## Geliştirme
+
+Kurallar: [AGENTS.md](AGENTS.md) (Claude Code, Codex ve insan geliştiriciler için tek kaynak).
+
+```
+pixi run test       # Python testleri
+pixi run test-ui    # arayüz testleri
+pixi run dev-api    # arka uç, otomatik yeniden yükleme
+pixi run dev-ui     # arayüz, http://localhost:5173
+```

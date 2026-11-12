@@ -103,7 +103,8 @@ def write_manifest(root: Path) -> None:
 
 def build_package(root: Path, *, counts: dict[str, int] | None = None, null_oids: list[int] | None = None,
                   version: str = "1.0.0-rc1", release_overrides: dict | None = None,
-                  extra_register_rows: list[list] | None = None) -> Path:
+                  extra_register_rows: list[list] | None = None, passport: dict | None = None,
+                  layer_metadata: dict[str, dict] | None = None) -> Path:
     pkg = root / "PACKAGE"
     (pkg / "QA").mkdir(parents=True)
     src = root / "01_ADMIN" / "SOURCE"
@@ -125,7 +126,10 @@ def build_package(root: Path, *, counts: dict[str, int] | None = None, null_oids
     release.update(release_overrides or {})
     release = {k: v for k, v in release.items() if v is not None}
     (pkg / "RELEASE_STATUS.json").write_text(json.dumps(release), encoding="utf-8")
-    (pkg / "DATASET_INVENTORY_AND_SCHEMA.json").write_text(json.dumps({k: {"count": v} for k, v in counts.items()}), encoding="utf-8")
+    inventory = {k: {"count": v, **({"metadata": layer_metadata[k]} if layer_metadata and k in layer_metadata else {})} for k, v in counts.items()}
+    (pkg / "DATASET_INVENTORY_AND_SCHEMA.json").write_text(json.dumps(inventory, ensure_ascii=False), encoding="utf-8")
+    if passport is not None:
+        (src / "Admin.metadata" / "TT01_DATASET_PASSPORT.json").write_text(json.dumps(passport, ensure_ascii=False), encoding="utf-8")
     (pkg / "CODED_DOMAINS.json").write_text(json.dumps([
         {"name": "Ilce_UAVT", "description": "UAVT İlçe Kodları", "coded_values": ILCE_UAVT},
         {"name": "YAKA", "description": "Yaka", "coded_values": YAKA},
@@ -165,6 +169,12 @@ def build_package(root: Path, *, counts: dict[str, int] | None = None, null_oids
     write_manifest(root)
     (pkg / "SHA256SUMS.csv").write_text("relative_path,bytes,sha256\n", encoding="utf-8")
     return root
+
+
+def write_ready_marker(root: Path, sha: str | None = None) -> None:
+    """Teslim protokolü: kopyalama bittiğinde paket köküne manifest özetiyle hazır işareti yazılır."""
+    digest = sha or _sha(root / "PACKAGE" / "MANIFEST.json")
+    (root / "THERMALIS_READY.json").write_text(json.dumps({"manifest_sha256": digest}), encoding="utf-8")
 
 
 @pytest.fixture()

@@ -24,6 +24,8 @@ class Settings(BaseModel):
     language: Language = "tr"
     data_root: str | None = None
     active_project_id: str | None = None
+    # Gelen aktarım paketleri klasörü (makineye özel; kodda sabit yol yok).
+    transfer_incoming_dir: str | None = None
 
 
 def config_dir() -> Path:

@@ -25,9 +25,25 @@ from typing import Any
 from .. import __version__
 from ..storage import read_json, write_json_atomic
 from . import catalog
-from .integrity import ManifestEntry, is_ephemeral, verify_tree
+from .integrity import ManifestEntry, is_ephemeral, sha256_file, verify_tree
 from .report import render_report
-from .transfer_package import UNHASHED_PACKAGE_FILES, PackageError, TransferPackage, load_package
+from .transfer_package import (
+    UNHASHED_PACKAGE_FILES,
+    PackageError,
+    TransferPackage,
+    access_class_from_release,
+    load_package,
+)
+
+# Kalite kayıtlarının kökeni: paketin kendi istisna defteri mi, kayıt sırasında beyan dosyalarından mı türetildi.
+ORIGIN_PACKAGE_REGISTER = "package_exception_register"
+ORIGIN_INGEST_DERIVED = "ingest_derived"
+RECORD_FILES = ("version.json", "quality.json", "integrity.json")
+
+
+def package_fingerprint(package_root: Path) -> str:
+    """Paket kimliğinin parmak izi: ``PACKAGE/MANIFEST.json`` dosyasının SHA-256'sı."""
+    return sha256_file(Path(package_root) / "PACKAGE" / "MANIFEST.json")
 from .vector_inspect import gdal_available, inspect_vector, null_field_fids
 
 PASS, FAIL, WARN, INFO = "PASS", "FAIL", "WARN", "INFO"
@@ -287,10 +303,12 @@ class _Run:
                 "population_scope": rs.get("population_scope"),
                 "origin_path": pkg.manifest_meta.get("source_path_on_origin_machine"),
                 "ingested_from": str(pkg.root),
+                "package_fingerprint": package_fingerprint(pkg.root),
+                "temporal_coverage": rs.get("temporal_coverage"),
                 "copy_verification": pkg.copy_verification,
             },
             "access": {
-                "classification": "RESTRICTED" if rs.get("not_released_as_public_open_data") else "UNSPECIFIED",
+                "classification": access_class_from_release(rs),
                 "public_release": False if rs.get("not_released_as_public_open_data") else None,
                 "authorization": rs.get("transfer_authorization"),
                 "policy": "Kaynak sahibinin kısıtlarına tabidir; açık veri olarak yayımlanamaz, onaylı kapsam dışında dağıtılamaz.",
@@ -320,6 +338,11 @@ class _Run:
             },
         }
         self.quality_record = self._quality()
+        ids = Counter(e["exception_id"] for e in self.quality_record["exceptions"])
+        duplicates = sorted(k for k, n in ids.items() if n > 1 or not k)
+        self.check("QA-01", "Kalite kayıt kimlikleri tekil", not duplicates,
+                   f"{len(ids)} kimlik · {len(self.quality_record['exceptions'])} kayıt"
+                   + (f" · yinelenen/boş: {duplicates[:10]}" if duplicates else ""))
         self.integrity_record = {
             "schema_version": "1.0",
             "algorithm": "SHA-256",
@@ -349,6 +372,7 @@ class _Run:
                     "evidence": row.get("evidence"),
                     "qa_action": row.get("qa_action"),
                     "disposition": row.get("disposition"),
+                    "origin": ORIGIN_PACKAGE_REGISTER,
                     "source": pkg.exception_register_path,
                 }
             )
@@ -368,23 +392,25 @@ class _Run:
                         "evidence": f"{declared.field} NULL (orman/askerî özel alan); ILCEKN={record.get('ILCEKN')}",
                         "qa_action": "Değiştirme, doldurma veya silme yapılmaz",
                         "disposition": "DOCUMENTED_INTENTIONAL",
+                        "origin": ORIGIN_INGEST_DERIVED,
                         "source": declared.evidence,
                     }
                 )
+        # Yardımcı katman durumu bir QA bulgusu değil katman bilgisidir; istisna listesine girmez
+        # (aksi hâlde paketin kendi AUX bulgularıyla aynı kimliği alıp sayımı şişirir).
         aux_states = (pkg.gates or {}).get("auxiliary", {})
-        for n, name in enumerate(pkg.auxiliary_layers, start=1):
+        layer_status = []
+        for name in pkg.auxiliary_layers:
             layer = self.layer_records.get(name, {})
-            state = aux_states.get(name, "NOT_ASSESSED_IN_PACKAGE")
-            exceptions.append(
+            layer_status.append(
                 {
-                    "exception_id": f"{pkg.family_prefix}-AUX-{n:02d}",
-                    "category": "AUXILIARY_LAYER_STATUS",
-                    "dataset": name,
-                    "feature_a": None, "oid_a": None, "feature_b": None, "oid_b": None,
-                    "area_m2": None, "percent_of_feature": None,
-                    "evidence": f"geometri durumu: {state}; tür: {layer.get('geometry_type')}; kayıt: {layer.get('feature_count')}",
-                    "qa_action": "Üretim idari sınırı olarak yayımlanmaz; köken için saklanır",
-                    "disposition": "AUXILIARY_NOT_PUBLISHED",
+                    "layer": name,
+                    "role": "auxiliary",
+                    "published": False,
+                    "geometry_state": aux_states.get(name, "NOT_ASSESSED_IN_PACKAGE"),
+                    "geometry_type": layer.get("geometry_type"),
+                    "feature_count": layer.get("feature_count"),
+                    "action": "Üretim idari sınırı olarak yayımlanmaz; köken için saklanır",
                     "source": pkg.gates_path,
                 }
             )
@@ -400,7 +426,9 @@ class _Run:
             "gates": (pkg.gates or {}).get("gates", []),
             "gates_source": pkg.gates_path,
             "summary": dict(Counter(e["category"] for e in exceptions)),
+            "summary_by_origin": dict(Counter(e["origin"] for e in exceptions)),
             "exceptions": exceptions,
+            "layer_status": layer_status,
         }
 
     # -- yayın -------------------------------------------------------------------
@@ -497,6 +525,10 @@ def register_package(package_root: Path, data_root: Path, expect_status: str | N
         encoding="utf-8",
         newline="\n",
     )
+    if status == PASS and location is not None:
+        # Değişmez sürüm: kayıt dosyaları ve rapor da salt okunur olur (payload zaten salt okunur).
+        for name in (*RECORD_FILES, report_name):
+            os.chmod(location / name, stat.S_IREAD | stat.S_IRGRP | stat.S_IROTH)
     return Outcome(
         status=status,
         ingest_id=run.ingest_id,

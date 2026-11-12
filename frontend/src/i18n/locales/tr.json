@@ -132,7 +132,8 @@
       "QA_CONDITIONAL": "Koşullu QA",
       "QA_PASS": "QA geçti",
       "QA_FAIL": "QA başarısız",
-      "UNVERIFIED": "Doğrulanmadı"
+      "UNVERIFIED": "Doğrulanmadı",
+      "QA_PENDING": "QA bekliyor"
     },
     "category": {
       "DISTRICT_OVERLAP": "İlçe–ilçe çakışması",

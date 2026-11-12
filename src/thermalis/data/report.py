@@ -155,8 +155,19 @@ def render_report(run: "_Run", status: str, error: str | None, location: Path | 
                 [("exception_id", "Kimlik"), ("feature_a", "Mahalle"), ("oid_a", "OID"), ("feature_b", "Üst ilçe"), ("area_m2", "Alan m²"), ("percent_of_feature", "%"), ("disposition", "Durum")])
         section("Kasıtlı boş kimlik numaraları", ("INTENTIONAL_NULL_IDENTIFIER",),
                 [("exception_id", "Kimlik"), ("dataset", "Katman"), ("feature_a", "Ad"), ("oid_a", "OBJECTID"), ("evidence", "Kanıt"), ("disposition", "Durum")])
-        section("Yardımcı katmanlar", ("AUXILIARY_LAYER_STATUS", "AUXILIARY_SELF_INTERSECTION"),
+        section("Yardımcı katman bulguları", ("AUXILIARY_SELF_INTERSECTION",),
                 [("exception_id", "Kimlik"), ("dataset", "Katman"), ("category", "Tür"), ("evidence", "Kanıt"), ("disposition", "Durum")])
+        if quality.get("summary_by_origin"):
+            lines.append("Kayıt kökeni: " + ", ".join(f"`{k}` {v}" for k, v in sorted(quality["summary_by_origin"].items()))
+                         + f" · toplam {len(exc)} kayıt, {len({e['exception_id'] for e in exc})} tekil kimlik.")
+            lines.append("")
+        if quality.get("layer_status"):
+            lines.append(f"### Yardımcı katman durumu ({len(quality['layer_status'])}) — QA bulgusu değildir, sayıma girmez")
+            lines.append("")
+            lines.append(_table(["Katman", "Geometri durumu", "Tür", "Kayıt", "Yayımlanır"], [
+                [f"`{s['layer']}`", s["geometry_state"], s["geometry_type"], s["feature_count"], "hayır"] for s in quality["layer_status"]
+            ]))
+            lines.append("")
         gaps = [e for e in exc if e["category"] == "DISTRICT_COVERAGE_GAP_DIAGNOSTIC"]
         if gaps:
             top = sorted(gaps, key=lambda e: e["area_m2"] or 0, reverse=True)[:3]

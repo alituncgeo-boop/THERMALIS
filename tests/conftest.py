@@ -101,7 +101,9 @@ def write_manifest(root: Path) -> None:
     (root / "PACKAGE" / "MANIFEST.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def build_package(root: Path, *, counts: dict[str, int] | None = None, null_oids: list[int] | None = None) -> Path:
+def build_package(root: Path, *, counts: dict[str, int] | None = None, null_oids: list[int] | None = None,
+                  version: str = "1.0.0-rc1", release_overrides: dict | None = None,
+                  extra_register_rows: list[list] | None = None) -> Path:
     pkg = root / "PACKAGE"
     (pkg / "QA").mkdir(parents=True)
     src = root / "01_ADMIN" / "SOURCE"
@@ -109,9 +111,9 @@ def build_package(root: Path, *, counts: dict[str, int] | None = None, null_oids
     _build_gdb(src / "Admin.gdb")
 
     counts = counts or {"Districts": 2, "Neighborhoods": 3, "Aux_Boundary": 1}
-    (pkg / "RELEASE_STATUS.json").write_text(json.dumps({
+    release = {
         "dataset_id": "THERMALIS_DATA/TT01_ADMIN_BOUNDARIES/ISTANBUL",
-        "version": "1.0.0-rc1",
+        "version": version,
         "status": "READY_FOR_CONTROLLED_TRANSFER__QA_CONDITIONAL",
         "core_dataset_names": ["Districts", "Neighborhoods"],
         "auxiliary_dataset_names_not_for_primary_publication": ["Aux_Boundary"],
@@ -119,7 +121,10 @@ def build_package(root: Path, *, counts: dict[str, int] | None = None, null_oids
         "not_released_as_public_open_data": True,
         "transfer_authorization": "test",
         "steward_topology_disposition": "OPEN",
-    }), encoding="utf-8")
+    }
+    release.update(release_overrides or {})
+    release = {k: v for k, v in release.items() if v is not None}
+    (pkg / "RELEASE_STATUS.json").write_text(json.dumps(release), encoding="utf-8")
     (pkg / "DATASET_INVENTORY_AND_SCHEMA.json").write_text(json.dumps({k: {"count": v} for k, v in counts.items()}), encoding="utf-8")
     (pkg / "CODED_DOMAINS.json").write_text(json.dumps([
         {"name": "Ilce_UAVT", "description": "UAVT İlçe Kodları", "coded_values": ILCE_UAVT},
@@ -147,6 +152,8 @@ def build_package(root: Path, *, counts: dict[str, int] | None = None, null_oids
         w.writerow(["exception_id", "category", "dataset", "feature_a", "oid_a", "feature_b", "oid_b", "area_m2", "percent_of_feature", "evidence", "qa_action", "disposition"])
         w.writerow(["TT01-DIST-OV-01", "DISTRICT_OVERLAP", "Districts", "ADALAR", 1, "KADIKÖY", 2, "3.5", "", "x", "Do not alter", "OPEN_OWNER_REVIEW"])
         w.writerow(["TT01-NB-OUT-01", "NEIGHBORHOOD_OUTSIDE_PARENT", "Neighborhoods", "FİKİRTEPE", 1, "KADIKÖY", 2, "61.1", "0.67", "x", "Do not alter", "OPEN_OWNER_REVIEW"])
+        for row in extra_register_rows or []:
+            w.writerow(row)
     (pkg / "QA" / "TT01_GATES.json").write_text(json.dumps({"gates": [{"id": "G02", "status": "HOLD", "detail": "steward"}],
                                                              "auxiliary": {"Aux_Boundary": "SELF_INTERSECTION_EXCLUDE_FROM_CORE"}}), encoding="utf-8")
     null_oids = [3] if null_oids is None else null_oids

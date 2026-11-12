@@ -167,6 +167,26 @@ def create_app(static_dir: Path | None = None) -> FastAPI:
             "integrity": {k: v for k, v in integrity.items() if k != "files"},
         }
 
+    @app.get("/api/data/layers")
+    def data_layers(dataset_id: str | None = None, version: str | None = None) -> list[dict]:
+        from .data.catalog_index import query_layers
+
+        return query_layers(effective_data_root(load_settings()), dataset_id, version)
+
+    @app.get("/api/data/findings")
+    def data_findings(dataset_id: str, version: str, category: str | None = None, layer_id: str | None = None) -> dict:
+        from .data.catalog_index import finding_summary, query_findings
+
+        root = effective_data_root(load_settings())
+        return {"summary": finding_summary(root, dataset_id, version),
+                "findings": query_findings(root, dataset_id, version, category=category, layer_id=layer_id)}
+
+    @app.get("/api/data/formats")
+    def data_formats() -> list[dict]:
+        from .data.adapters import support_matrix
+
+        return support_matrix()
+
     @app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "DELETE"])
     def api_not_found(rest: str) -> None:
         raise _error(404, "not_found")

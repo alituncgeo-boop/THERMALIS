@@ -132,7 +132,8 @@
       "QA_CONDITIONAL": "QA conditional",
       "QA_PASS": "QA passed",
       "QA_FAIL": "QA failed",
-      "UNVERIFIED": "Unverified"
+      "UNVERIFIED": "Unverified",
+      "QA_PENDING": "QA pending"
     },
     "category": {
       "DISTRICT_OVERLAP": "District–district overlap",

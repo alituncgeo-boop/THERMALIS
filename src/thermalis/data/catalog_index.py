@@ -417,5 +417,6 @@ def finding_summary(data_root: Path, dataset_id: str, version: str) -> dict[str,
 
 def query_versions(data_root: Path, dataset_id: str | None = None) -> list[dict[str, Any]]:
     sql = ("SELECT dataset_id, version, package_id, package_fingerprint, quality_status, access_class, registered_at, ingest_id "
-           "FROM dataset_versions WHERE (? IS NULL OR dataset_id=?) ORDER BY dataset_id, registered_at")
+           # registered_at saniye çözünürlüklüdür; aynı saniyedeki kayıtlar sürüm adına göre sıralanır (belirlenimci).
+           "FROM dataset_versions WHERE (? IS NULL OR dataset_id=?) ORDER BY dataset_id, registered_at, version")
     return _query(data_root, sql, (dataset_id, dataset_id))

@@ -135,7 +135,11 @@ def test_new_version_keeps_prior_version_intact(incoming: Path, data_root: Path,
     (r,) = summary.results
     assert r.technical == "PASS" and r.prior_versions_unchanged is True
     assert _tree(v1) == before
-    assert [v["version"] for v in query_versions(data_root, DATASET)] == ["1.0.0-rc1", "1.0.0"]
+    versions = query_versions(data_root, DATASET)
+    assert sorted(v["version"] for v in versions) == ["1.0.0", "1.0.0-rc1"]
+    # Sıra kayıt zamanına göredir; iki kayıt aynı saniyeye düşebilir, o zaman sürüm adı belirler.
+    assert versions == sorted(versions, key=lambda v: (v["registered_at"], v["version"]))
+    assert query_versions(data_root, DATASET) == versions
     assert json.loads((v1.parent / "dataset.json").read_text(encoding="utf-8"))["versions"] == ["1.0.0", "1.0.0-rc1"]
 
 

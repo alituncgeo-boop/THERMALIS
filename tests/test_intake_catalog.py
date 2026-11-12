@@ -35,6 +35,16 @@ LAYER_META = {
 }
 
 
+@pytest.fixture(autouse=True)
+def no_background_work_left():
+    """Elle ekleme API'si arka plan iş parçacığı başlatır; testler birbirinin kilidine çarpmasın."""
+    from thermalis.data import ingest
+
+    yield
+    assert ingest._PROCESS_LOCK.acquire(timeout=120), "arka plan entegrasyonu bitmedi"
+    ingest._PROCESS_LOCK.release()
+
+
 @pytest.fixture()
 def incoming(tmp_path: Path) -> Path:
     folder = tmp_path / "INCOMING"
@@ -343,5 +353,7 @@ def test_restricted_data_is_never_sent_out(incoming: Path, data_root: Path, monk
     monkeypatch.setattr(socket, "create_connection", refuse)
     monkeypatch.setattr(socket.socket, "connect", refuse)
     write_ready_marker(build_package(incoming / "TT01_v1"))
-    _watcher(incoming, data_root).scan_once()
+    w = _watcher(incoming, data_root)
+    w.scan_once()
+    assert (w.status.last_result, w.status.last_error) == ("ok", None)
     assert _state(data_root, "TT01_v1")["state"] == "REGISTERED" and _state(data_root, "TT01_v1")["access"] == "RESTRICTED"

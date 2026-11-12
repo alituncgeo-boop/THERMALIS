@@ -13,6 +13,7 @@ interface AppState {
   selectProject: (projectId: string) => Promise<void>;
   createProject: (name: string, description: string) => Promise<Project>;
   setDataRoot: (path: string) => Promise<void>;
+  updateSettings: (update: Partial<Omit<Settings, "data_root_is_default">>) => Promise<void>;
   reload: () => Promise<void>;
 }
 
@@ -68,6 +69,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       async setDataRoot(path) {
         await api.updateSettings({ data_root: path });
         await reload();
+      },
+      async updateSettings(update) {
+        setSettings(await api.updateSettings(update));
       },
       reload,
     };

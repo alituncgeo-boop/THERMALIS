@@ -7,6 +7,7 @@ import { Layout } from "./components/Layout";
 import "./i18n";
 import { Home } from "./pages/Home";
 import { DataPage } from "./pages/DataCatalog";
+import { DatasetMetadataPage } from "./pages/DatasetMetadata";
 import { City3dPage, IntelligencePage, LabDomainPage, LabPage, RiskPage } from "./pages/modules";
 import { SettingsPage } from "./pages/SettingsPage";
 import { AppProvider, useApp } from "./state";
@@ -32,6 +33,7 @@ function App() {
       <Route path="/" element={<Home />} />
       <Route element={<Layout />}>
         <Route path="/data" element={<DataPage />} />
+        <Route path="/data/dataset" element={<DatasetMetadataPage />} />
         <Route path="/lab" element={<LabPage />} />
         <Route path="/lab/:domain" element={<LabDomainPage />} />
         <Route path="/risk" element={<RiskPage />} />

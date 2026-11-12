@@ -198,6 +198,26 @@
         "detail": "Ayrıntı",
         "updated": "Güncelleme"
       },
+      "reason": {
+        "ALREADY_REGISTERED": "Aynı paket (manifest SHA-256) zaten kayıtlı; yeniden kaydedilmez.",
+        "ARCHIVE": "Arşivler otomatik açılmaz. Bir klasöre çıkarın.",
+        "SETTLING": "Bekleniyor: dosyalar yakın zamanda değişti (kopyalama sürüyor olabilir).",
+        "INCOMPLETE": "Eksik: manifestteki dosyalar yok, boyutlar farklı veya geçici/tamamlanmamış işareti var.",
+        "NOT_A_PACKAGE": "Henüz PACKAGE/MANIFEST.json veya RELEASE_STATUS.json yok; işlenmez.",
+        "STABILITY_CHECK": "Kararlılık kontrolü: dosyalar bir sonraki taramada değişmemişse işlenir.",
+        "UNSAFE": "Sembolik bağlantı veya junction içeriyor; güvenlik nedeniyle reddedildi.",
+        "INVALID": "Paket yapısı veya manifest geçersiz.",
+        "VERSION_CONFLICT": "Aynı sürüm farklı içerikle zaten kayıtlı; üzerine yazılmaz.",
+        "INTERRUPTED": "Önceki işlem yarıda kaldı; paket yeniden değerlendiriliyor.",
+        "RETRY_REQUESTED": "Yeniden deneme istendi.",
+        "VALIDATING": "Manifest, format ve yetki kapıları denetleniyor.",
+        "INGESTING": "SHA-256 doğrulanıyor, değişmez sürüm oluşturuluyor, kataloğa kaydediliyor.",
+        "format_not_supported": "Bu veri türü için henüz adaptör yok; SUPPORT_GAP.json'a bakın.",
+        "authorization_statement_missing": "Yetki beyanı olmayan kısıtlı veri; kullanıcı kararı gerekli.",
+        "access_classification_unknown": "Paket erişim sınıfını beyan etmiyor; kullanıcı kararı gerekli.",
+        "check_failed": "Bir kayıt denetimi başarısız; ayrıntıya ve entegrasyon raporuna bakın.",
+        "unexpected": "Beklenmeyen hata; yarım kayıt bırakılmadı."
+      },
       "result": {
         "busy": "başka bir entegrasyon sürüyor",
         "not_configured": "klasör ayarlı değil",

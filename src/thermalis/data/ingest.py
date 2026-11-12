@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import threading
 import stat
@@ -626,6 +627,12 @@ PROCESS_STATES = ("VERSION_CONFLICT", "UNSAFE", "INVALID")  # READY dışında s
 
 INTAKE_STATES = ("DETECTED", "WAITING_FOR_COMPLETION", "VALIDATING", "READY", "INGESTING", "REGISTERED",
                  "ALREADY_REGISTERED", "BLOCKED", "ADAPTER_REQUIRED", "FAILED")
+# Arayüzün çevirdiği neden kodları (frontend locale'lerinde data.intake.reason.<kod>; test kontrol eder).
+REASON_CODES = (
+    "ALREADY_REGISTERED", "ARCHIVE", "SETTLING", "INCOMPLETE", "NOT_A_PACKAGE", "STABILITY_CHECK", "UNSAFE", "INVALID",
+    "VERSION_CONFLICT", "INTERRUPTED", "RETRY_REQUESTED", "VALIDATING", "INGESTING", "format_not_supported",
+    "authorization_statement_missing", "access_classification_unknown", "check_failed", "unexpected",
+)
 RETRYABLE_STATES = ("BLOCKED", "ADAPTER_REQUIRED", "FAILED")
 IN_FLIGHT_STATES = ("VALIDATING", "INGESTING")
 CANDIDATE_TO_INTAKE = {
@@ -658,16 +665,28 @@ def _save_intake(data_root: Path, intake: dict[str, Any]) -> None:
     write_json_atomic(intake_path(data_root), intake)
 
 
-def _set_state(intake: dict[str, Any], path: Path, state: str, reason: str = "", **extra: Any) -> dict[str, Any]:
+def _set_state(intake: dict[str, Any], path: Path, state: str, reason: str = "", reason_code: str = "", **extra: Any) -> dict[str, Any]:
+    """``reason_code`` dilden bağımsız neden kodudur (arayüz çevirir); ``reason`` ayrıntı/kanıt metnidir."""
     key = str(path)
     now = _utc_now()
     entry = intake["packages"].get(key) or {"name": path.name, "path": key, "first_seen": now, "history": []}
     if entry.get("state") != state:
-        entry["history"] = (entry.get("history", []) + [{"at": now, "state": state, "reason": reason}])[-20:]
+        entry["history"] = (entry.get("history", []) + [{"at": now, "state": state, "reason_code": reason_code, "reason": reason}])[-20:]
         entry["state_since"] = now
-    entry.update({"state": state, "reason": reason, "updated_at": now, "present": True, **extra})
+    entry.update({"state": state, "reason": reason, "reason_code": reason_code, "updated_at": now, "present": True, **extra})
     intake["packages"][key] = entry
     return entry
+
+
+def _result_code(result: IngestResult) -> str:
+    if result.technical == TECH_PASS:
+        return ""
+    prefix = (result.stop_reason or "").split(":", 1)[0].strip()
+    if re.fullmatch(r"[A-Z]{3}-\d{2}", prefix):
+        return "check_failed"
+    if prefix.startswith("UNEXPECTED") or prefix.startswith("catalog_index"):
+        return "unexpected"
+    return prefix
 
 
 def _result_state(result: IngestResult) -> str:
@@ -681,11 +700,11 @@ def _result_state(result: IngestResult) -> str:
 def _process(candidate: Candidate, data_root: Path, item_id: str, intake: dict[str, Any], auditor: Auditor | None) -> IngestResult:
     base = {"dataset_id": candidate.dataset_id, "version": candidate.version, "fingerprint": candidate.fingerprint,
             "signature": candidate.signature, "ready_marker": candidate.ready_marker}
-    _set_state(intake, candidate.path, "VALIDATING", "manifest, format ve yetki kapıları", **base)
+    _set_state(intake, candidate.path, "VALIDATING", "manifest, format ve yetki kapıları", "VALIDATING", **base)
     _save_intake(data_root, intake)
 
     def progress(state: str) -> None:
-        _set_state(intake, candidate.path, state, "SHA-256 doğrulaması, değişmez sürüm, katalog kaydı", **base)
+        _set_state(intake, candidate.path, state, "SHA-256 doğrulaması, değişmez sürüm, katalog kaydı", "INGESTING", **base)
         _save_intake(data_root, intake)
 
     try:
@@ -695,7 +714,7 @@ def _process(candidate: Candidate, data_root: Path, item_id: str, intake: dict[s
         _stop(result, "S13", TECH_FAIL, f"UNEXPECTED: {type(exc).__name__}: {exc}")
         recover(data_root)
     _write_result(data_root, result)
-    _set_state(intake, candidate.path, _result_state(result), result.stop_reason or "", **base,
+    _set_state(intake, candidate.path, _result_state(result), result.stop_reason or "", _result_code(result), **base,
                item_id=item_id, technical=result.technical, quality=result.quality, access=result.access,
                result_path=str(result.folder / "INGESTION_RESULT.json") if result.folder else None,
                support_gap_path=str(result.folder / "SUPPORT_GAP.json") if result.support_gap and result.folder else None,
@@ -737,7 +756,7 @@ def run_ingest(incoming: Path, data_root: Path, *, settle_seconds: float = DEFAU
             intake = load_intake(data_root)
             for key, entry in list(intake["packages"].items()):  # çökme sonrası yarım kalan işlem
                 if entry.get("state") in IN_FLIGHT_STATES:
-                    _set_state(intake, Path(key), "DETECTED", f"önceki işlem yarıda kaldı ({entry.get('state')}); yeniden değerlendirilecek")
+                    _set_state(intake, Path(key), "DETECTED", f"önceki işlem yarıda kaldı ({entry.get('state')}); yeniden değerlendirilecek", "INTERRUPTED")
                     intake["packages"][key]["signature"] = None
             seen = {str(c.path) for c in candidates}
             for key, entry in intake["packages"].items():
@@ -755,18 +774,18 @@ def run_ingest(incoming: Path, data_root: Path, *, settle_seconds: float = DEFAU
                         continue  # değişmemiş başarısız paket: aynı hatayı tekrar üretme
                     if require_stable and not c.ready_marker and not (same and prev.get("state") in ("WAITING_FOR_COMPLETION", "DETECTED", "READY")):
                         _set_state(intake, c.path, "WAITING_FOR_COMPLETION",
-                                   "kararlılık kontrolü: dosyalar bir sonraki taramada değişmemiş olmalı", **extra)
+                                   "kararlılık kontrolü: dosyalar bir sonraki taramada değişmemiş olmalı", "STABILITY_CHECK", **extra)
                         continue
                     _set_state(intake, c.path, "READY", "", **extra)
                     to_process.append(c)
                 elif state == "ALREADY_REGISTERED" and prev and prev.get("state") == "REGISTERED":
                     prev.update(present=True, updated_at=_utc_now())  # kendi kaydettiğimiz paket: REGISTERED kalır
                 elif state in RETRYABLE_STATES and same and prev.get("state") == state and not retry_failed:
-                    prev.update(present=True)
+                    prev.update(present=True, reason_code=prev.get("reason_code") or c.state)
                 elif c.state in PROCESS_STATES:
                     to_process.append(c)  # güvenlik/yapı/sürüm sorunu: sonuç raporuyla birlikte kaydedilir
                 else:
-                    _set_state(intake, c.path, state, c.reason, **extra)
+                    _set_state(intake, c.path, state, c.reason, c.state, **extra)
             _save_intake(data_root, intake)
             for n, candidate in enumerate(to_process):
                 results.append(_process(candidate, data_root, f"{run_id}-{n + 1:02d}", intake, auditor))
@@ -803,7 +822,7 @@ def ingest_path(package: Path, data_root: Path, *, expect_dataset_id: str | None
                  "signature": candidate.signature, "ready_marker": candidate.ready_marker, "source": "manual"}
         log_event(data_root, event="manual_submit", package=str(package), state=candidate.state)
         if candidate.state != "READY":
-            entry = _set_state(intake, package, CANDIDATE_TO_INTAKE[candidate.state], candidate.reason, **extra)
+            entry = _set_state(intake, package, CANDIDATE_TO_INTAKE[candidate.state], candidate.reason, candidate.state, **extra)
             _save_intake(data_root, intake)
             return entry
         _set_state(intake, package, "READY", "", **extra)
@@ -823,6 +842,7 @@ def forget_failure(data_root: Path, key: str) -> bool:
         entry = intake["packages"].get(key)
         if not entry or entry.get("state") not in RETRYABLE_STATES:
             return False
-        entry.update(state="DETECTED", reason="kullanıcı yeniden deneme istedi", signature=None, updated_at=_utc_now())
+        entry.update(state="DETECTED", reason="kullanıcı yeniden deneme istedi", reason_code="RETRY_REQUESTED",
+                     signature=None, updated_at=_utc_now())
         _save_intake(data_root, intake)
         return True

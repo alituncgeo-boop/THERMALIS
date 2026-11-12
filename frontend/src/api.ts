@@ -109,6 +109,7 @@ export interface IntakePackage {
   path: string;
   state: string;
   reason: string;
+  reason_code?: string;
   dataset_id?: string | null;
   version?: string | null;
   updated_at?: string;

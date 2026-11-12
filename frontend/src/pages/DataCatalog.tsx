@@ -99,7 +99,8 @@ function IntakePanel({ intake, items, onScan, onRetry }: { intake: IntakeStatus 
         </button>
       )}
       {open && (
-        <table className="data-table compact">
+        <div className="table-scroll">
+        <table className="data-table compact intake-table">
           <thead>
             <tr>
               <th>{t("data.intake.col.package")}</th>
@@ -117,16 +118,18 @@ function IntakePanel({ intake, items, onScan, onRetry }: { intake: IntakeStatus 
                 <td><StateBadge state={p.state} /></td>
                 <td className="mono small-cell">{p.dataset_id ? `${p.dataset_id} ${p.version ?? ""}` : f.unknown}</td>
                 <td className="small-cell">
-                  {p.reason || "—"}
+                  {p.reason_code ? t(`data.intake.reason.${p.reason_code}`, { defaultValue: p.reason_code }) : p.reason ? "" : "—"}
+                  {p.reason && <div className="cell-muted">{p.reason}</div>}
                   {p.user_decision && <div className="cell-muted">{p.user_decision}</div>}
                   {p.support_gap_path && <div className="cell-muted mono">{p.support_gap_path}</div>}
                 </td>
                 <td className="small-cell">{f.date(p.updated_at)}</td>
-                <td>{RETRYABLE.includes(p.state) && <button type="button" className="ghost-button small-button" onClick={() => onRetry(p)}>{t("data.intake.retry")}</button>}</td>
+                <td>{RETRYABLE.includes(p.state) && p.item_id && <button type="button" className="ghost-button small-button" onClick={() => onRetry(p)}>{t("data.intake.retry")}</button>}</td>
               </tr>
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );
@@ -363,6 +366,7 @@ export function DataPage() {
               {filtered.length === 0 ? (
                 <p className="muted small-gap">{t("data.no_match")}</p>
               ) : (
+                <div className="table-scroll">
                 <table className="data-table">
                   <thead>
                     <tr>
@@ -391,6 +395,7 @@ export function DataPage() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               )}
             </div>
             {selected && <DetailPanel item={selected} onVerified={() => { loadCatalog(); setNotice(t("data.detail.verified")); }} />}

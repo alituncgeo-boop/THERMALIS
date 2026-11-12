@@ -80,7 +80,7 @@ def test_watcher_waits_for_stable_package_then_registers(incoming: Path, data_ro
     w = _watcher(incoming, data_root)
     w.scan_once()
     first = _state(data_root, "TT01_v1")
-    assert first["state"] == "WAITING_FOR_COMPLETION" and "kararlılık" in first["reason"]
+    assert first["state"] == "WAITING_FOR_COMPLETION" and first["reason_code"] == "STABILITY_CHECK"
     assert catalog.list_versions(data_root) == []
     w.scan_once()
     assert _state(data_root, "TT01_v1")["state"] == "REGISTERED"
@@ -134,7 +134,7 @@ def test_corrupt_sha256_fails_once_and_is_retried_only_on_request(incoming: Path
     w.scan_once()
     w.scan_once()
     entry = _state(data_root, "corrupt")
-    assert entry["state"] == "FAILED" and "INT-01" in entry["reason"]
+    assert entry["state"] == "FAILED" and "INT-01" in entry["reason"] and entry["reason_code"] == "check_failed"
     runs = list((catalog.data_dir(data_root) / "_ingest" / "runs").iterdir())
     w.scan_once()  # değişmemiş başarısız paket: yeniden işlenmez
     assert list((catalog.data_dir(data_root) / "_ingest" / "runs").iterdir()) == runs
@@ -154,7 +154,7 @@ def test_unsupported_format_is_reported_as_adapter_required(incoming: Path, data
     write_ready_marker(package)
     _watcher(incoming, data_root).scan_once()
     entry = _state(data_root, "landsat_like")
-    assert entry["state"] == "ADAPTER_REQUIRED" and entry["reason"].startswith("format_not_supported")
+    assert entry["state"] == "ADAPTER_REQUIRED" and entry["reason_code"] == "format_not_supported"
     gap = json.loads(Path(entry["support_gap_path"]).read_text(encoding="utf-8"))
     assert set(gap["unsupported_by_suffix"]) == {".tif", ".json"}
     assert catalog.list_versions(data_root) == []
@@ -222,6 +222,17 @@ def test_app_startup_scans_folder_and_detects_new_packages(incoming: Path, data_
         status = client.get("/api/data/intake").json()
         assert status["watcher"]["enabled"] is True and status["counts"]["REGISTERED"] == 2
         assert {d["version"] for d in client.get("/api/data/catalog").json()["datasets"]} == {"1.0.0"}  # katalogda son sürüm
+
+
+def test_every_intake_state_and_reason_code_is_translated() -> None:
+    from thermalis.data.ingest import CANDIDATE_TO_INTAKE, INTAKE_STATES, REASON_CODES
+
+    locales = Path(__file__).resolve().parents[1] / "frontend" / "src" / "i18n" / "locales"
+    for lang in ("tr", "en"):
+        intake = json.loads((locales / f"{lang}.json").read_text(encoding="utf-8"))["data"]["intake"]
+        assert set(INTAKE_STATES) <= set(intake["state"]), lang
+        assert set(REASON_CODES) <= set(intake["reason"]), lang
+    assert set(CANDIDATE_TO_INTAKE) - {"READY"} <= set(REASON_CODES)  # READY nedensiz işlenir
 
 
 # ----------------------------------------------------------------------------- katalog görünümleri ve API

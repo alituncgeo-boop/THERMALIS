@@ -198,6 +198,26 @@
         "detail": "Detail",
         "updated": "Updated"
       },
+      "reason": {
+        "ALREADY_REGISTERED": "The same package (manifest SHA-256) is already registered; it is not registered again.",
+        "ARCHIVE": "Archives are not extracted automatically. Extract it into a folder.",
+        "SETTLING": "Waiting: files changed recently (copying may still be in progress).",
+        "INCOMPLETE": "Incomplete: files listed in the manifest are missing, sizes differ, or a temporary/incomplete marker is present.",
+        "NOT_A_PACKAGE": "No PACKAGE/MANIFEST.json or RELEASE_STATUS.json yet; not processed.",
+        "STABILITY_CHECK": "Stability check: processed if the files are unchanged at the next scan.",
+        "UNSAFE": "Contains symbolic links or junctions; rejected for safety.",
+        "INVALID": "Package structure or manifest is invalid.",
+        "VERSION_CONFLICT": "The same version is already registered with different content; it is not overwritten.",
+        "INTERRUPTED": "The previous run was interrupted; the package is evaluated again.",
+        "RETRY_REQUESTED": "Retry requested.",
+        "VALIDATING": "Checking manifest, format and authorization gates.",
+        "INGESTING": "Verifying SHA-256, creating the immutable version, registering in the catalog.",
+        "format_not_supported": "No adapter for this data type yet; see SUPPORT_GAP.json.",
+        "authorization_statement_missing": "Restricted data without an authorization statement; a user decision is required.",
+        "access_classification_unknown": "The package does not declare its access classification; a user decision is required.",
+        "check_failed": "A registration check failed; see the detail and the ingestion report.",
+        "unexpected": "Unexpected error; no partial record was left."
+      },
       "result": {
         "busy": "another integration is running",
         "not_configured": "folder not configured",

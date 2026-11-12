@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, Box, Layers, MessageSquare, Plus, Send, Sparkle } from "lucide-react";
+import { ArrowLeft, ArrowRight, Box, Layers, MessageSquare, Send, Sparkle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Link, Navigate, useParams } from "react-router-dom";
 import { EmptyState, StatusPill } from "../components/common";
@@ -9,29 +9,6 @@ import { useApp } from "../state";
 
 function useProjectName(): string {
   return useApp().activeProject?.name ?? "";
-}
-
-export function DataPage() {
-  const { t } = useTranslation();
-  const project = useProjectName();
-  return (
-    <RequireProject>
-      <PageHeader
-        lead="THERMALIS"
-        accent="DATA"
-        subtitle={t("pages.data.subtitle", { project })}
-        actions={
-          <button type="button" className="primary-button" disabled title={t("common.next_step")}>
-            <Plus size={18} aria-hidden />
-            {t("pages.data.add_dataset")}
-          </button>
-        }
-      />
-      <div className="panel">
-        <EmptyState icon={Layers} accent="var(--c-data)" title={t("pages.data.empty_title")} body={t("pages.data.empty_body")} />
-      </div>
-    </RequireProject>
-  );
 }
 
 export function LabPage() {

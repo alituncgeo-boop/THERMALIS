@@ -33,7 +33,7 @@ from .settings import (
 # Her bileşenin gerçek durumu. Bir bileşen yazılmadıkça "not_started" kalır;
 # arayüz bu değeri dürüst bir boş durum olarak gösterir.
 MODULE_STATUS: dict[str, str] = {
-    "data": "not_started",
+    "data": "in_progress",
     "analysis_lab": "not_started",
     "risk_engine": "not_started",
     "city3d": "not_started",
@@ -141,6 +141,31 @@ def create_app(static_dir: Path | None = None) -> FastAPI:
         if project is None:
             raise _error(404, "project_not_found")
         return project
+
+    @app.get("/api/data/versions")
+    def data_versions() -> list[dict]:
+        from .data.catalog import list_versions
+
+        return list_versions(effective_data_root(load_settings()))
+
+    @app.get("/api/data/version")
+    def data_version(dataset_id: str, version: str) -> dict:
+        from .data.catalog import read_version
+
+        try:
+            found = read_version(effective_data_root(load_settings()), dataset_id, version)
+        except ValueError as exc:
+            raise _error(400, "invalid_dataset_reference") from exc
+        if found is None:
+            raise _error(404, "dataset_not_found")
+        record = found["record"]
+        # Arayüze dosya bazlı özetler değil, özet bütünlük bilgisi gider.
+        integrity = found["integrity"]
+        return {
+            "record": record,
+            "quality": found["quality"],
+            "integrity": {k: v for k, v in integrity.items() if k != "files"},
+        }
 
     @app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "DELETE"])
     def api_not_found(rest: str) -> None:

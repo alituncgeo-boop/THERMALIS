@@ -66,8 +66,7 @@
     "data": {
       "subtitle": "{{project}} data catalog and version management",
       "add_dataset": "Add dataset",
-      "empty_title": "No registered data yet",
-      "empty_body": "Adding data and managing versions will arrive in the next development step of the DATA component. Every registered dataset will be listed here with its source, version, period and quality status."
+      "empty_title": "No registered data yet"
     },
     "lab": {
       "subtitle": "Scientific climate analysis workspaces for {{project}}",
@@ -97,6 +96,53 @@
       "data_root_warning": "Changing the data root resets the active project selection.",
       "default_badge": "Default",
       "version": "Version"
+    }
+  },
+  "data": {
+    "add_via_command": "For now data is registered by command: pixi run data register \"<package folder>\"",
+    "empty_body": "No registered datasets. A verified transfer package is registered with: pixi run data register \"<package folder>\". Every registered dataset is listed here with its source, version and quality status.",
+    "catalog_title": "Data catalog",
+    "col": {
+      "dataset": "Dataset",
+      "version": "Version",
+      "quality": "Quality",
+      "layers": "Core layers",
+      "crs": "CRS",
+      "access": "Access",
+      "registered": "Registered",
+      "layer": "Layer",
+      "role": "Role",
+      "geometry": "Geometry",
+      "features": "Features"
+    },
+    "restricted": "Restricted",
+    "layers_title": "Layers",
+    "role": {
+      "core": "Core (published)",
+      "auxiliary": "Auxiliary (not published)",
+      "unclassified": "Unclassified"
+    },
+    "integrity": "Integrity: {{files}} files SHA-256 —",
+    "crs_kept": "CRS preserved: {{name}} (no transformation)",
+    "documents": "{{count}} documents (manifest, dictionary, domains, QA) kept unchanged",
+    "source": "Source: {{owner}} · package {{pkg}}",
+    "quality_title": "Quality",
+    "quality_note": "Findings are documented; the source is never auto-corrected or rejected. Status is never upgraded automatically.",
+    "quality": {
+      "QA_CONDITIONAL": "QA conditional",
+      "QA_PASS": "QA passed",
+      "QA_FAIL": "QA failed",
+      "UNVERIFIED": "Unverified"
+    },
+    "category": {
+      "DISTRICT_OVERLAP": "District–district overlap",
+      "NEIGHBORHOOD_OVERLAP_SAME_DISTRICT": "Neighborhood overlap (same district)",
+      "NEIGHBORHOOD_OVERLAP_CROSS_DISTRICT": "Neighborhood overlap (cross-district)",
+      "NEIGHBORHOOD_OUTSIDE_PARENT": "Outside parent district",
+      "DISTRICT_COVERAGE_GAP_DIAGNOSTIC": "District coverage difference (diagnostic)",
+      "AUXILIARY_SELF_INTERSECTION": "Auxiliary layer: self-intersection",
+      "AUXILIARY_LAYER_STATUS": "Auxiliary layer status",
+      "INTENTIONAL_NULL_IDENTIFIER": "Intentional null identifier"
     }
   }
 }

@@ -10,8 +10,10 @@
 
 from __future__ import annotations
 
+import gc
 import os
 import secrets
+import time
 import shutil
 import stat
 from collections import Counter
@@ -26,7 +28,7 @@ from . import catalog
 from .integrity import ManifestEntry, is_ephemeral, verify_tree
 from .report import render_report
 from .transfer_package import UNHASHED_PACKAGE_FILES, PackageError, TransferPackage, load_package
-from .vector_inspect import crs_matches, gdal_available, inspect_vector, null_field_fids
+from .vector_inspect import gdal_available, inspect_vector, null_field_fids
 
 PASS, FAIL, WARN, INFO = "PASS", "FAIL", "WARN", "INFO"
 
@@ -82,6 +84,19 @@ def _make_writable(folder: Path) -> None:
     for path in folder.rglob("*"):
         if path.is_file():
             os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+
+
+def _move_dir(source: Path, target: Path, attempts: int = 5) -> None:
+    """Klasörü taşır. Windows'ta kısa süreli dosya kilitlerine (antivirüs taraması vb.) karşı birkaç kez dener."""
+    for attempt in range(attempts):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            gc.collect()
+            time.sleep(0.5 * (attempt + 1))
 
 
 def _float_or_none(value: str | None) -> float | None:
@@ -166,7 +181,7 @@ class _Run:
         self.check("VEC-00", "Vektör kaynak bulundu", bool(pkg.vector_sources), ", ".join(pkg.vector_sources) or "yok")
         for source in pkg.vector_sources:
             try:
-                info = inspect_vector(payload / source)
+                info = inspect_vector(payload / source, pkg.crs.get("native_wkt") or None)
             except Exception as exc:  # GDAL hataları
                 self.check("VEC-01", f"{source} salt okunur açıldı", False, str(exc))
                 return
@@ -175,8 +190,6 @@ class _Run:
             self._check_layers(source, info)
             self._check_domains(info)
             self._check_null_identities(payload / source, info)
-            # Kontrol bitti: veri kaynağını kapat (Windows'ta dosya kilidi kalmasın)
-            info.pop("_dataset", None)
 
     def _check_layers(self, source: str, info: dict[str, Any]) -> None:
         pkg = self.pkg
@@ -206,7 +219,7 @@ class _Run:
 
             crs_ok = None
             if layer["geometry_type"] != "None":
-                crs_ok = crs_matches(layer["_srs"], expected_wkt) if expected_wkt else False
+                crs_ok = bool(layer["crs_matches_expected"]) if expected_wkt else False
                 self.check("VEC-06", f"CRS paket WKT'si ile aynı (dönüşüm yok): {name}", crs_ok,
                            str(layer["crs_name"]), fatal=role == "core", warn=role != "core")
 
@@ -401,7 +414,7 @@ class _Run:
         self.final.parent.mkdir(parents=True, exist_ok=True)
         if self.final.exists():
             self.check("CAT-02", "Yayın sırasında sürüm hâlâ boş", False, str(self.final))
-        os.replace(self.staging, self.final)
+        _move_dir(self.staging, self.final)
         self.check("CAT-02", "Sürüm klasörü tek adımda yayımlandı", True, str(self.final))
 
     def verify_final(self) -> None:
@@ -418,7 +431,6 @@ class _Run:
                 counted = info["layers"][name]["feature_count"] if name in info["layers"] else None
                 self.check("VEC-07", f"Kayıt sonrası sayım: {name}", counted == pkg.expected_count(name),
                            f"sayılan {counted} · beklenen {pkg.expected_count(name)}")
-            info.pop("_dataset", None)
         leftovers = [p.name for p in payload.rglob("*") if p.is_file() and is_ephemeral(p)]
         self.check("INT-04", "Doğrulama kaynağa kilit/geçici dosya bırakmadı", not leftovers, ", ".join(leftovers) or "—")
 
@@ -469,7 +481,7 @@ def register_package(package_root: Path, data_root: Path, expect_status: str | N
         source = run.final if published and run.final is not None and run.final.exists() else run.staging
         if source.exists():
             _make_writable(source)
-            os.replace(source, location)
+            _move_dir(source, location)
             vr = location / "version.json"
             if vr.is_file():
                 record = read_json(vr)
@@ -513,5 +525,4 @@ def verify_registered(data_root: Path, dataset_id: str, version: str) -> list[Ch
             counted = info["layers"].get(name, {}).get("feature_count")
             checks.append(Check("VEC-07", f"Sayım: {name}", PASS if counted == layer["expected_feature_count"] else FAIL,
                                 f"sayılan {counted} · beklenen {layer['expected_feature_count']}"))
-        info.pop("_dataset", None)
     return checks

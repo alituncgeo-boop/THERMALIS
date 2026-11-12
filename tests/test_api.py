@@ -22,7 +22,8 @@ def test_health(client: TestClient) -> None:
 
 def test_status_is_honest(client: TestClient) -> None:
     body = client.get("/api/status").json()
-    assert set(body["modules"].values()) == {"not_started"}
+    assert body["modules"]["data"] == "in_progress"
+    assert {v for k, v in body["modules"].items() if k != "data"} == {"not_started"}
     assert set(body["analysis_domains"]) == {"heat", "drought", "flood", "coast", "fire", "extremes"}
 
 

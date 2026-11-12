@@ -66,8 +66,7 @@
     "data": {
       "subtitle": "{{project}} veri kataloğu ve sürüm yönetimi",
       "add_dataset": "Veri ekle",
-      "empty_title": "Henüz kayıtlı veri yok",
-      "empty_body": "Veri ekleme ve sürüm yönetimi, DATA bileşeninin bir sonraki geliştirme adımında gelecek. Kayıtlı her veri seti burada kaynağı, sürümü, dönemi ve kalite durumuyla listelenecek."
+      "empty_title": "Henüz kayıtlı veri yok"
     },
     "lab": {
       "subtitle": "{{project}} için bilimsel iklim analizi çalışma alanları",
@@ -97,6 +96,53 @@
       "data_root_warning": "Veri kökünü değiştirirseniz aktif proje seçimi sıfırlanır.",
       "default_badge": "Varsayılan",
       "version": "Sürüm"
+    }
+  },
+  "data": {
+    "add_via_command": "Veri kaydı şimdilik komutla yapılır: pixi run data register \"<paket klasörü>\"",
+    "empty_body": "Kayıtlı veri seti yok. Doğrulanmış bir aktarım paketi şu komutla kaydedilir: pixi run data register \"<paket klasörü>\". Kayıtlı her veri seti burada kaynağı, sürümü ve kalite durumuyla listelenir.",
+    "catalog_title": "Veri kataloğu",
+    "col": {
+      "dataset": "Veri seti",
+      "version": "Sürüm",
+      "quality": "Kalite",
+      "layers": "Çekirdek katmanlar",
+      "crs": "CRS",
+      "access": "Erişim",
+      "registered": "Kayıt",
+      "layer": "Katman",
+      "role": "Rol",
+      "geometry": "Geometri",
+      "features": "Kayıt"
+    },
+    "restricted": "Kısıtlı",
+    "layers_title": "Katmanlar",
+    "role": {
+      "core": "Çekirdek (yayımlanır)",
+      "auxiliary": "Yardımcı (yayımlanmaz)",
+      "unclassified": "Sınıflandırılmamış"
+    },
+    "integrity": "Bütünlük: {{files}} dosya SHA-256 —",
+    "crs_kept": "CRS korunuyor: {{name}} (dönüşüm yok)",
+    "documents": "{{count}} belge (manifest, sözlük, domainler, QA) değiştirilmeden saklanıyor",
+    "source": "Kaynak: {{owner}} · paket {{pkg}}",
+    "quality_title": "Kalite",
+    "quality_note": "Bulgular belgelenir, kaynak otomatik düzeltilmez veya reddedilmez. Durum otomatik yükseltilmez.",
+    "quality": {
+      "QA_CONDITIONAL": "Koşullu QA",
+      "QA_PASS": "QA geçti",
+      "QA_FAIL": "QA başarısız",
+      "UNVERIFIED": "Doğrulanmadı"
+    },
+    "category": {
+      "DISTRICT_OVERLAP": "İlçe–ilçe çakışması",
+      "NEIGHBORHOOD_OVERLAP_SAME_DISTRICT": "Mahalle çakışması (aynı ilçe)",
+      "NEIGHBORHOOD_OVERLAP_CROSS_DISTRICT": "Mahalle çakışması (ilçeler arası)",
+      "NEIGHBORHOOD_OUTSIDE_PARENT": "Üst ilçe dışına taşma",
+      "DISTRICT_COVERAGE_GAP_DIAGNOSTIC": "İlçe kapsama farkı (tanılayıcı)",
+      "AUXILIARY_SELF_INTERSECTION": "Yardımcı katman: kendiyle kesişme",
+      "AUXILIARY_LAYER_STATUS": "Yardımcı katman durumu",
+      "INTENTIONAL_NULL_IDENTIFIER": "Kasıtlı boş kimlik numarası"
     }
   }
 }

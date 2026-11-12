@@ -29,6 +29,30 @@ değiştirilebilir (örn. `D:\THERMALIS_DATA`). Veri dosyaları asla repoya ekle
 
 > Veri kökünü OneDrive / Google Drive gibi eşitlenen klasörlere koymayın.
 
+## Veri paketlerini kataloğa alma
+
+Hazırlanan aktarım paketini (içinde `PACKAGE/MANIFEST.json` olan klasör) gelen klasöre bırakın
+ve tek komut çalıştırın:
+
+```
+pixi run data set-incoming "C:\THERMALIS_TRANSFER\INCOMING"   # bir kez
+pixi run data ingest --dry-run      # yalnız keşif: hangi paket hazır, hangisi bekliyor
+pixi run data ingest                # hazır paketleri doğrula, kaydet, dizinle, denetle
+```
+
+- Kopyalanmakta olan, eksik, bağlantı içeren veya arşiv hâlindeki paketler işlenmez.
+- Aynı paket ikinci kez kaydedilmez; aynı sürüm farklı içerikle gelirse durur (üzerine yazılmaz).
+- Kaynak paket hiçbir koşulda değiştirilmez, taşınmaz, silinmez.
+- Kalite durumu paketten alınır, asla yükseltilmez. Erişim sınıfı veya yetki beyanı eksikse durur.
+- Sonuçlar: `<veri kökü>/data/_ingest/runs/<kimlik>/INGESTION_REPORT.md` ve `INGESTION_RESULT.json`.
+
+**Desteklenen veri türleri:** şu an yalnız File Geodatabase (vektör). Başka bir tür içeren paket
+işlenmez (`BLOCKED`) ve `SUPPORT_GAP.json` yazılır; adaptör `src/thermalis/data/adapters.py` içindeki
+adımlarla eklenir ve gerçek veriyle doğrulandıktan sonra kalıcı olur.
+
+Diğer komutlar: `data formats`, `data layers`, `data findings <id> <sürüm>`, `data verify <id> <sürüm>`,
+`data reindex`.
+
 ## Güncelleme
 
 GitHub Desktop'ta *Fetch origin → Pull*, ardından tekrar `pixi run start`.

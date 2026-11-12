@@ -49,8 +49,15 @@ def _read_csv(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+QUALITY_STATUSES = ("QA_PASS", "QA_CONDITIONAL", "QA_FAIL", "QA_PENDING")
+ACCESS_CLASSES = ("PUBLIC", "RESTRICTED", "UNKNOWN")
+
+
 def quality_status_from_release(status: str) -> str:
-    """Paketin yayın durumundan kalite durumu çıkarılır; asla yükseltilmez."""
+    """Paketin yayın durumundan kalite durumu çıkarılır; asla yükseltilmez.
+
+    Belirsiz durum ``QA_PENDING`` olur (PASS varsayılmaz).
+    """
     upper = status.upper()
     if "QA_CONDITIONAL" in upper:
         return "QA_CONDITIONAL"
@@ -58,7 +65,21 @@ def quality_status_from_release(status: str) -> str:
         return "QA_FAIL"
     if "QA_PASS" in upper:
         return "QA_PASS"
-    return "UNVERIFIED"
+    return "QA_PENDING"
+
+
+def access_class_from_release(release: dict[str, Any]) -> str:
+    """Erişim sınıfı yalnız paketin açık beyanından çıkar; asla gevşetilmez.
+
+    ``PUBLIC`` yalnız ``access_classification: "PUBLIC"`` açıkça yazılmışsa ve
+    paket kendini açık veri dışı ilan etmemişse verilir.
+    """
+    declared = str(release.get("access_classification", "")).upper()
+    if release.get("not_released_as_public_open_data") is True or declared == "RESTRICTED":
+        return "RESTRICTED"
+    if declared == "PUBLIC":
+        return "PUBLIC"
+    return "UNKNOWN"
 
 
 @dataclass

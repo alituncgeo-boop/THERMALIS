@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import socket
 import sys
@@ -108,6 +109,104 @@ def _data_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _incoming_dir(args: argparse.Namespace) -> Path | None:
+    from .settings import load_settings
+
+    value = args.incoming or load_settings().transfer_incoming_dir
+    return Path(value) if value else None
+
+
+def _data_ingest(args: argparse.Namespace) -> int:
+    from .data.ingest import IngestLocked, release_stale_lock, run_ingest
+
+    root = _data_root()
+    if args.release_stale_lock:
+        print("Kilit kaldırıldı / lock released" if release_stale_lock(root) else "Kilit yok / no lock")
+        return 0
+    incoming = _incoming_dir(args)
+    if incoming is None:
+        print("Gelen klasör ayarlı değil / incoming folder not set:  thermalis data set-incoming <klasör>", file=sys.stderr)
+        return 1
+    print(f"Veri kökü / data root: {root}")
+    print(f"Gelen klasör / incoming: {incoming}")
+    try:
+        summary = run_ingest(incoming, root, settle_seconds=args.settle_seconds, dry_run=args.dry_run, only=args.package)
+    except IngestLocked as exc:
+        print(f"Başka bir entegrasyon çalışıyor / another ingest is running: {exc}", file=sys.stderr)
+        print("Çökme sonrası kalan kilit için / stale lock:  thermalis data ingest --release-stale-lock", file=sys.stderr)
+        return 3
+    for action in summary.recovery:
+        print(f"  [RECOVERY] {action['action']}: {action['from']} → {action['to']} ({action['reason']})")
+    for c in summary.candidates:
+        print(f"  [{c.state:18}] {c.path.name}  {c.dataset_id or ''} {c.version or ''}  {c.reason}")
+    for r in summary.results:
+        print(f"SONUÇ / RESULT  {r.package_path.name}: teknik={r.technical} kalite={r.quality} denetim={r.audit} erişim={r.access}")
+        if r.stop_reason:
+            print(f"    durma nedeni / stop: {r.stop_reason}")
+        if r.user_decision:
+            print(f"    kullanıcı kararı / decision: {r.user_decision}")
+        print(f"    rapor / report: {r.folder / 'INGESTION_REPORT.md' if r.folder else '—'}")
+    if args.dry_run:
+        print("Kuru çalıştırma: hiçbir şey kaydedilmedi / dry run: nothing registered")
+    return 0 if summary.ok else 2
+
+
+def _data_set_incoming(args: argparse.Namespace) -> int:
+    from .settings import load_settings, save_settings
+
+    path = Path(args.folder)
+    if not path.is_dir():
+        print(f"Klasör yok / folder not found: {path}", file=sys.stderr)
+        return 1
+    settings = load_settings()
+    settings.transfer_incoming_dir = str(path)
+    save_settings(settings)
+    print(f"Gelen klasör / incoming folder: {path}")
+    return 0
+
+
+def _data_reindex(args: argparse.Namespace) -> int:
+    from .data.catalog_index import query_record_issues, query_versions, rebuild_index
+
+    root = _data_root()
+    print(f"Dizin / index: {rebuild_index(root)}")
+    for v in query_versions(root):
+        print(f"  {v['dataset_id']}  {v['version']}  {v['quality_status']}  {v['access_class']}")
+    for issue in query_record_issues(root):
+        print(f"  [KAYIT SORUNU] {issue['dataset_id']} {issue['version']}  {issue['code']}: {issue['detail']}  ({issue['evidence']})")
+    return 0
+
+
+def _data_formats(args: argparse.Namespace) -> int:
+    from .data.adapters import support_matrix
+
+    print("Desteklenen veri türleri / supported formats (diğer her tür BLOCKED + SUPPORT_GAP.json):")
+    for a in support_matrix():
+        print(f"  {a['key']:16} {a['label']}  ({', '.join(a['suffixes'])}) · doğrulandı: {a['validated_with']}")
+        for check in a["checks"]:
+            print(f"  {'':16} - {check}")
+    return 0
+
+
+def _data_layers(args: argparse.Namespace) -> int:
+    from .data.catalog_index import query_layers
+
+    for l in query_layers(_data_root(), args.dataset_id, args.version):
+        print(f"{l['layer_dataset_id']}  {l['version']}  {l['role']:9} {l['geometry_type']:14} {l['feature_count']:>7}  asset={l['source_asset_id']}")
+    return 0
+
+
+def _data_findings(args: argparse.Namespace) -> int:
+    from .data.catalog_index import finding_summary, query_findings
+
+    root = _data_root()
+    print(json.dumps(finding_summary(root, args.dataset_id, args.version), ensure_ascii=False, indent=2))
+    if args.list:
+        for f in query_findings(root, args.dataset_id, args.version, category=args.category):
+            print(f"  #{f['seq']:<3} {f['exception_id']:22} uniq={f['id_unique']} {f['origin']:28} {f['kind']:20} {f['category']}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="thermalis", description="THERMALIS — Urban Climate Intelligence Framework")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -130,6 +229,31 @@ def main(argv: list[str] | None = None) -> int:
     ver.set_defaults(func=_data_verify)
     lst = data_sub.add_parser("list", help="Kayıtlı veriler / registered data")
     lst.set_defaults(func=_data_list)
+
+    ing = data_sub.add_parser("ingest", help="Gelen klasördeki paketleri otomatik işle / ingest incoming packages")
+    ing.add_argument("--incoming", default=None, help="Gelen paket klasörü (varsayılan: ayarlardaki transfer_incoming_dir)")
+    ing.add_argument("--package", default=None, help="Yalnız bu alt klasörü işle")
+    ing.add_argument("--settle-seconds", type=float, default=120.0, help="Klasör bu kadar süre değişmeden kalmalı (kopyalama bitti)")
+    ing.add_argument("--dry-run", action="store_true", help="Yalnız keşif: hiçbir şey kaydetme")
+    ing.add_argument("--release-stale-lock", action="store_true", help="Çökme sonrası kalan kilidi kaldır")
+    ing.set_defaults(func=_data_ingest)
+    inc = data_sub.add_parser("set-incoming", help="Gelen paket klasörünü ayarla / set incoming folder")
+    inc.add_argument("folder")
+    inc.set_defaults(func=_data_set_incoming)
+    rix = data_sub.add_parser("reindex", help="Sorgulanabilir katalog dizinini kayıtlardan yeniden üret")
+    rix.set_defaults(func=_data_reindex)
+    fmt = data_sub.add_parser("formats", help="Format adaptörlerinin destek durumu")
+    fmt.set_defaults(func=_data_formats)
+    lay = data_sub.add_parser("layers", help="Katmanlar (bağımsız veri setleri olarak)")
+    lay.add_argument("dataset_id", nargs="?")
+    lay.add_argument("version", nargs="?")
+    lay.set_defaults(func=_data_layers)
+    fnd = data_sub.add_parser("findings", help="Kalite kayıtları özeti")
+    fnd.add_argument("dataset_id")
+    fnd.add_argument("version")
+    fnd.add_argument("--category", default=None)
+    fnd.add_argument("--list", action="store_true")
+    fnd.set_defaults(func=_data_findings)
 
     args = parser.parse_args(argv)
     return args.func(args)

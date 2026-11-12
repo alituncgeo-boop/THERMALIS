@@ -44,8 +44,12 @@ def test_register_success(package: Path, data_root: Path) -> None:
 
     quality = json.loads((final / "quality.json").read_text(encoding="utf-8"))
     assert quality["status"] == "QA_CONDITIONAL"
-    assert quality["summary"] == {"DISTRICT_OVERLAP": 1, "NEIGHBORHOOD_OUTSIDE_PARENT": 1,
-                                  "INTENTIONAL_NULL_IDENTIFIER": 1, "AUXILIARY_LAYER_STATUS": 1}
+    assert quality["summary"] == {"DISTRICT_OVERLAP": 1, "NEIGHBORHOOD_OUTSIDE_PARENT": 1, "INTENTIONAL_NULL_IDENTIFIER": 1}
+    assert quality["summary_by_origin"] == {"package_exception_register": 2, "ingest_derived": 1}
+    assert [s["layer"] for s in quality["layer_status"]] == ["Aux_Boundary"]
+    assert len({e["exception_id"] for e in quality["exceptions"]}) == len(quality["exceptions"])
+    for name in ("version.json", "quality.json", "integrity.json", "TT01_DATA_INGESTION_REPORT.md"):
+        assert not ((final / name).stat().st_mode & stat.S_IWUSR), f"{name} salt okunur olmalı"
 
     integrity = json.loads((final / "integrity.json").read_text(encoding="utf-8"))
     assert {k: v["status"] for k, v in integrity["verifications"].items()} == {
@@ -134,7 +138,7 @@ def test_api_lists_registered_data(package: Path, tmp_path: Path, monkeypatch) -
     assert register_package(package, data_root).status == "PASS"
     client = TestClient(create_app())
     versions = client.get("/api/data/versions").json()
-    assert versions[0]["dataset_id"] == DATASET and versions[0]["exception_count"] == 4
+    assert versions[0]["dataset_id"] == DATASET and versions[0]["exception_count"] == 3
     detail = client.get("/api/data/version", params={"dataset_id": DATASET, "version": "1.0.0-rc1"}).json()
     assert detail["quality"]["status"] == "QA_CONDITIONAL"
     assert "files" not in detail["integrity"]

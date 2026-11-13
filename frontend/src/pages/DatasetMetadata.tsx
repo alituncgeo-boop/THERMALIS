@@ -114,7 +114,11 @@ export function DatasetMetadataPage() {
           <Table
             columns={[{ key: "code", label: t("data.meta.col.code"), mono: true }, { key: "detail", label: t("data.meta.col.detail") }, { key: "evidence", label: t("data.meta.col.evidence"), mono: true }]}
             rows={meta.record_issues}
-            render={(key, row) => (key === "code" ? t(`data.meta.issue.${row.code}`, { defaultValue: String(row.code) }) : undefined)}
+            render={(key, row) => {
+              if (key === "code") return <span className="nowrap">{t(`data.meta.issue.${row.code}`, { defaultValue: String(row.code) })}</span>;
+              if (key === "detail") return t(`data.meta.issue_detail.${row.code}`, { detail: String(row.detail ?? ""), defaultValue: String(row.detail ?? "") });
+              return undefined;
+            }}
           />
         </Section>
       )}

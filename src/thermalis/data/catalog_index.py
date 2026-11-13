@@ -37,6 +37,9 @@ from .integrity import sha256_file
 
 INDEX_FILE = "catalog_index.sqlite"
 INDEX_SCHEMA_VERSION = "1.0"
+# Kayıt yapısı sorun kodları (frontend: data.meta.issue.<kod> ve data.meta.issue_detail.<kod>; test kontrol eder).
+RECORD_ISSUE_CODES = ("DUPLICATE_EXCEPTION_ID", "LAYER_STATUS_COUNTED_AS_EXCEPTION", "FINDING_ORIGIN_NOT_RECORDED",
+                      "PACKAGE_FINGERPRINT_NOT_RECORDED", "RECORD_FILES_WRITABLE")
 REGISTER_SOURCE_SUFFIX = "EXCEPTION_REGISTER.csv"
 
 SCHEMA = """
@@ -396,12 +399,12 @@ def _index_version(con: sqlite3.Connection, folder: Path) -> None:
             issues.append(("DUPLICATE_EXCEPTION_ID", f"{eid} × {n}", f"quality.json exceptions{seqs}"))
     legacy_status = [i for i, e in enumerate(exceptions) if e.get("category") == "AUXILIARY_LAYER_STATUS"]
     if legacy_status:
-        issues.append(("LAYER_STATUS_COUNTED_AS_EXCEPTION", f"{len(legacy_status)} katman durumu istisna listesinde",
-                       f"quality.json exceptions{legacy_status}"))
+        # Ayrıntılar dilden bağımsız değerdir; cümleyi arayüz seçili dilde kurar (data.meta.issue_detail.<kod>).
+        issues.append(("LAYER_STATUS_COUNTED_AS_EXCEPTION", str(len(legacy_status)), f"quality.json exceptions{legacy_status}"))
     if any("origin" not in e for e in exceptions):
-        issues.append(("FINDING_ORIGIN_NOT_RECORDED", "köken kaynak dosyasından çıkarıldı", "quality.json exceptions[*].source"))
+        issues.append(("FINDING_ORIGIN_NOT_RECORDED", "", "quality.json exceptions[*].source"))
     if fp_source != "version.json":
-        issues.append(("PACKAGE_FINGERPRINT_NOT_RECORDED", f"parmak izi {fp_source} üzerinden hesaplandı", "version.json source"))
+        issues.append(("PACKAGE_FINGERPRINT_NOT_RECORDED", "payload/PACKAGE/MANIFEST.json", "version.json source"))
     writable = [n for n in ("version.json", "quality.json", "integrity.json") if os.stat(folder / n).st_mode & stat.S_IWUSR]
     if writable:
         issues.append(("RECORD_FILES_WRITABLE", ", ".join(writable), str(folder)))

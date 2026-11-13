@@ -120,6 +120,14 @@
     "all_categories": "All categories",
     "result_count": "{{shown}} / {{total}} datasets",
     "no_match": "No dataset matches the search and filter.",
+    "clear_search": "Clear search",
+    "search_short": "Search datasets…",
+    "pager": {
+      "range": "{{from}}–{{to}} of {{total}} (catalog: {{all}})",
+      "page": "Page {{page}} / {{pages}}",
+      "prev": "Previous page",
+      "next": "Next page"
+    },
     "title_pattern": "{{place}} {{layer}}",
     "extent": "x {{minx}} – {{maxx}} · y {{miny}} – {{maxy}} ({{crs}})",
     "col": {
@@ -179,13 +187,14 @@
       "watching": "Watching {{folder}} every {{seconds}} s",
       "last_scan": "last scan {{at}}",
       "scan_now": "Scan now",
-      "show_packages": "Show packages ({{count}}, {{attention}} need attention)",
-      "hide_packages": "Hide packages",
+      "details": "Packages ({{count}})",
+      "latest_line": "Latest integration: {{title}} · {{at}}",
+      "no_integration": "No integration yet",
+      "ignored_line": "{{count}} input outside the package protocol (not a failure; see packages)",
       "manual": "manual",
       "retry": "Retry",
       "stat": {
-        "registered": "Registered datasets",
-        "latest": "Latest integration",
+        "registered": "Datasets",
         "in_progress": "In progress",
         "waiting": "Waiting",
         "adapter_required": "Adapter required",
@@ -200,7 +209,7 @@
       },
       "reason": {
         "ALREADY_REGISTERED": "The same package (manifest SHA-256) is already registered; it is not registered again.",
-        "ARCHIVE": "Archives are not extracted automatically. Extract it into a folder.",
+        "ARCHIVE": "Standalone archive: not delivered as a package, so it is not processed. It is not extracted, moved or deleted. To add it, extract it into a package folder.",
         "SETTLING": "Waiting: files changed recently (copying may still be in progress).",
         "INCOMPLETE": "Incomplete: files listed in the manifest are missing, sizes differ, or a temporary/incomplete marker is present.",
         "NOT_A_PACKAGE": "No PACKAGE/MANIFEST.json or RELEASE_STATUS.json yet; not processed.",
@@ -234,7 +243,8 @@
         "ALREADY_REGISTERED": "Already registered",
         "BLOCKED": "Blocked",
         "ADAPTER_REQUIRED": "Adapter required",
-        "FAILED": "Failed"
+        "FAILED": "Failed",
+        "UNSUPPORTED_INPUT": "Not a package"
       }
     },
     "detail": {
@@ -246,7 +256,20 @@
       "category": "Category",
       "source_institution": "Source institution",
       "format": "Format",
-      "features": "{{n}} features",
+      "geometry": "Geometry",
+      "geometry_value": "{{geometry}} · {{n}} features",
+      "asset": "File asset",
+      "copy_id": "Copy dataset ID",
+      "panel_label": "Selected dataset",
+      "show_more": "Show more",
+      "show_less": "Show less",
+      "technical_details": "Technical details (fingerprint, asset, CRS WKT)",
+      "group": {
+        "identity": "Identity and version",
+        "source": "Source",
+        "technical": "Spatial and technical",
+        "status": "Integrity and metadata"
+      },
       "crs": "CRS",
       "spatial": "Spatial coverage",
       "temporal": "Temporal coverage",
@@ -364,6 +387,13 @@
         "FINDING_ORIGIN_NOT_RECORDED": "Finding origin not recorded",
         "PACKAGE_FINGERPRINT_NOT_RECORDED": "Package fingerprint not recorded",
         "RECORD_FILES_WRITABLE": "Record files are writable"
+      },
+      "issue_detail": {
+        "DUPLICATE_EXCEPTION_ID": "{{detail}}",
+        "LAYER_STATUS_COUNTED_AS_EXCEPTION": "{{detail}} layer-status entries are in the exception list",
+        "FINDING_ORIGIN_NOT_RECORDED": "Origin derived from each record's source file",
+        "PACKAGE_FINGERPRINT_NOT_RECORDED": "Computed from {{detail}} (legacy record)",
+        "RECORD_FILES_WRITABLE": "{{detail}}"
       },
       "origin": {
         "package_exception_register": "Package register",

@@ -22,9 +22,9 @@ export function Layout() {
       </header>
       <nav className="sidebar" aria-label="THERMALIS">
         {MODULES.map((m) => (
-          <NavLink key={m.key} to={m.path} className="nav-item" style={{ "--accent": m.accent } as React.CSSProperties}>
+          <NavLink key={m.key} to={m.path} className="nav-item" title={m.label.join(" ")} style={{ "--accent": m.accent } as React.CSSProperties}>
             <m.icon size={26} strokeWidth={1.5} aria-hidden />
-            <span>
+            <span className="nav-label">
               {m.label.map((line) => (
                 <span key={line} className="nav-line">
                   {line}

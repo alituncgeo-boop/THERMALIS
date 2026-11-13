@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from platformdirs import user_config_dir
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .storage import read_json, write_json_atomic
 
@@ -26,6 +26,11 @@ class Settings(BaseModel):
     active_project_id: str | None = None
     # Gelen aktarım paketleri klasörü (makineye özel; kodda sabit yol yok).
     transfer_incoming_dir: str | None = None
+    # Uygulama açıkken klasörün aralıklı taranması.
+    transfer_watch_enabled: bool = True
+    transfer_scan_interval_seconds: int = Field(default=30, ge=10, le=3600)
+    # Hazır işareti olmayan paketlerde son değişiklikten sonra beklenecek süre.
+    transfer_settle_seconds: int = Field(default=120, ge=0, le=86400)
 
 
 def config_dir() -> Path:

@@ -29,7 +29,8 @@ from .integrity import ManifestEntry
 DATASET_ID_PATTERN = re.compile(r"^THERMALIS_DATA(/[A-Z0-9_]+){1,4}$")
 VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$")
 PACKAGE_DIR = "PACKAGE"
-UNHASHED_PACKAGE_FILES = ("PACKAGE/MANIFEST.json", "PACKAGE/SHA256SUMS.csv")
+# Manifestin kendisi, özet listesi ve teslim (hazır) işareti manifestte yer alamaz; kopyalanır ama özetlenmez.
+UNHASHED_PACKAGE_FILES = ("PACKAGE/MANIFEST.json", "PACKAGE/SHA256SUMS.csv", "THERMALIS_READY.json")
 
 
 class PackageError(Exception):

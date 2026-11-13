@@ -31,8 +31,23 @@ değiştirilebilir (örn. `D:\THERMALIS_DATA`). Veri dosyaları asla repoya ekle
 
 ## Veri paketlerini kataloğa alma
 
-Hazırlanan aktarım paketini (içinde `PACKAGE/MANIFEST.json` olan klasör) gelen klasöre bırakın
-ve tek komut çalıştırın:
+**Olağan yol:** THERMALIS açıkken hazırlanan aktarım paketini (içinde `PACKAGE/MANIFEST.json` olan
+klasör) gelen klasöre bırakın (Ayarlar → *Veri aktarım klasörü*). Program klasörü aralıklı tarar,
+açılışta da hemen tarar (kapalıyken bırakılan paketler bir sonraki açılışta algılanır). Durum,
+DATA ekranındaki *Veri kabul* panelinde görünür.
+
+**Tamamlanmış teslim (önerilen):** kopyalama bitince paket köküne şu dosyayı yazın:
+
+```
+THERMALIS_READY.json   {"manifest_sha256": "<PACKAGE/MANIFEST.json dosyasının SHA-256'sı>"}
+```
+
+İşaret yoksa paket, bekleme süresi geçtikten ve dosyalar iki taramada değişmedikten sonra işlenir.
+Her durumda manifestteki her dosya SHA-256 ile doğrulanır. Klasörü `.` ile başlayan bir adla
+kopyalayıp bitince yeniden adlandırmak da güvenli bir yoldur (gizli adlar taranmaz).
+
+Arayüzde *Veri ekle* / *Yeni sürüm yükle* bir paket klasörünü aynı denetimlerden geçirir.
+Komut satırından:
 
 ```
 pixi run data set-incoming "C:\THERMALIS_TRANSFER\INCOMING"   # bir kez

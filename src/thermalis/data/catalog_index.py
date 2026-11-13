@@ -24,8 +24,10 @@ import re
 import sqlite3
 import stat
 import tempfile
+import time
 from collections import Counter
 from contextlib import closing
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +88,12 @@ CREATE TABLE relations(subject TEXT, predicate TEXT, object TEXT, dataset_id TEX
 CREATE TABLE metadata_completeness(dataset_id TEXT, version TEXT, item TEXT, state TEXT, detail TEXT,
   PRIMARY KEY(dataset_id, version, item));
 CREATE TABLE record_issues(dataset_id TEXT, version TEXT, code TEXT, detail TEXT, evidence TEXT);
+CREATE TABLE layer_metadata(layer_dataset_id TEXT, version TEXT, title TEXT, summary TEXT, description TEXT,
+  credits TEXT, tags TEXT, access_constraints TEXT, source_file TEXT, PRIMARY KEY(layer_dataset_id, version));
+CREATE TABLE dataset_profile(dataset_id TEXT, version TEXT, title TEXT, title_tr TEXT, category TEXT, themes TEXT,
+  geographic_scope TEXT, providing_organization TEXT, origin_system TEXT, temporal_currency_year TEXT,
+  valid_from TEXT, valid_to TEXT, temporal_note TEXT, source_file TEXT, PRIMARY KEY(dataset_id, version));
+CREATE TABLE verifications(dataset_id TEXT, version TEXT, at TEXT, status TEXT, kind TEXT, detail TEXT);
 CREATE TABLE ingest_runs(item_id TEXT PRIMARY KEY, package_name TEXT, dataset_id TEXT, version TEXT,
   technical_status TEXT, quality_status TEXT, audit_status TEXT, access_class TEXT, started_at TEXT,
   finished_at TEXT, result_path TEXT);
@@ -114,6 +122,56 @@ def _read(path: Path) -> Any:
         return json.load(handle)
 
 
+class _TextOnly(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+
+def html_to_text(value: Any) -> str | None:
+    """Kaynak metadata'daki ArcGIS HTML açıklamalarını düz metne çevirir (işaretleme asla yorumlanmaz)."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    parser = _TextOnly()
+    parser.feed(value)
+    text = " ".join(" ".join(parser.parts).split())
+    return text or None
+
+
+def _payload_json(folder: Path, rel: str) -> Any:
+    """Sürümün payload'ındaki bir belgeyi okur; yoksa/bozuksa ``None`` (bilinmeyen = bilinmeyen)."""
+    path = folder / "payload" / Path(*rel.split("/"))
+    try:
+        with path.open("r", encoding="utf-8-sig") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
+
+
+def dataset_profile(folder: Path, record: dict[str, Any]) -> dict[str, Any] | None:
+    """Paketteki ``*_DATASET_PASSPORT.json`` belgesinden kimlik, köken ve zaman bilgisi (varsa)."""
+    passport_rel = next((d for d in record.get("documents", []) if d.endswith("_DATASET_PASSPORT.json")), None)
+    passport = _payload_json(folder, passport_rel) if passport_rel else None
+    if not isinstance(passport, dict):
+        return None
+    identity = passport.get("identity") or {}
+    provenance = passport.get("provenance") or {}
+    st = passport.get("spatial_temporal") or {}
+    themes = identity.get("theme") if isinstance(identity.get("theme"), list) else []
+    return {
+        "title": identity.get("dataset_title"), "title_tr": identity.get("dataset_title_tr"),
+        "category": themes[0] if themes else None, "themes": themes,
+        "geographic_scope": identity.get("geographic_scope"),
+        "providing_organization": provenance.get("providing_organization"), "origin_system": provenance.get("origin_system"),
+        "temporal_currency_year": None if st.get("temporal_currency_year") is None else str(st.get("temporal_currency_year")),
+        "valid_from": st.get("precise_valid_from"), "valid_to": st.get("precise_valid_to"),
+        "temporal_note": st.get("decision_date_scope"), "source_file": passport_rel,
+    }
+
+
 def finding_origin(record: dict[str, Any]) -> str:
     if record.get("origin"):
         return str(record["origin"])
@@ -129,8 +187,9 @@ def finding_kind(category: str) -> str:
     return "finding"
 
 
-def metadata_completeness(record: dict[str, Any], quality: dict[str, Any]) -> list[tuple[str, str, str]]:
-    """(öğe, durum, ayrıntı). Durumlar: present | missing | unknown | not_applicable. Hiçbir değer uydurulmaz."""
+def metadata_completeness(record: dict[str, Any], quality: dict[str, Any],
+                          profile: dict[str, Any] | None = None) -> list[tuple[str, str, str]]:
+    """(öğe, durum, ayrıntı). Durumlar: present | partial | missing | unknown | not_applicable. Hiçbir değer uydurulmaz."""
     src = record.get("source", {})
     access = record.get("access", {})
     crs = record.get("crs", {})
@@ -159,8 +218,15 @@ def metadata_completeness(record: dict[str, Any], quality: dict[str, Any]) -> li
     temporal = src.get("temporal_coverage")
     if isinstance(temporal, str) and temporal.lower() == "not_applicable":
         out.append(("temporal_coverage", "not_applicable", "paket beyanı"))
+    elif temporal:
+        out.append(("temporal_coverage", "present", json.dumps(temporal, ensure_ascii=False)))
+    elif profile and profile.get("temporal_currency_year"):
+        both = profile.get("valid_from") and profile.get("valid_to")
+        out.append(("temporal_coverage", "present" if both else "partial",
+                    f"güncellik yılı {profile['temporal_currency_year']}; geçerlilik başlangıç/bitiş: "
+                    f"{profile.get('valid_from') or 'yok'} / {profile.get('valid_to') or 'yok'} ({profile.get('source_file')})"))
     else:
-        out.append(("temporal_coverage", "present" if temporal else "unknown", json.dumps(temporal, ensure_ascii=False) if temporal else "pakette beyan yok"))
+        out.append(("temporal_coverage", "unknown", "pakette beyan yok"))
     item("vector_fields", bool(layers) and all(l.get("fields") for l in layers.values()), f"{len(layers)} katman")
     item("coded_domains", bool(record.get("domains")) or None, f"{len(record.get('domains', []))} domain")
     item("data_dictionary", bool(dictionary), f"{len(dictionary)} satır")
@@ -300,7 +366,26 @@ def _index_version(con: sqlite3.Connection, folder: Path) -> None:
     for derived in record.get("derived_artifacts", []):
         con.execute("INSERT INTO relations VALUES (?,?,?,?,?,?)",
                     (str(derived.get("id") if isinstance(derived, dict) else derived), "derived_from", f"{ds}@{ver}", ds, ver, "version.json derived_artifacts"))
-    for item, state, detail in metadata_completeness(record, quality):
+    profile = dataset_profile(folder, record)
+    if profile:
+        con.execute("INSERT INTO dataset_profile VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (ds, ver, profile["title"], profile["title_tr"], profile["category"], json.dumps(profile["themes"], ensure_ascii=False),
+                     profile["geographic_scope"], profile["providing_organization"], profile["origin_system"],
+                     profile["temporal_currency_year"], profile["valid_from"], profile["valid_to"], profile["temporal_note"], profile["source_file"]))
+    inventory = _payload_json(folder, "PACKAGE/DATASET_INVENTORY_AND_SCHEMA.json")
+    for name in record.get("layers", {}):
+        meta = (inventory or {}).get(name, {}).get("metadata") if isinstance((inventory or {}).get(name), dict) else None
+        if isinstance(meta, dict):
+            con.execute("INSERT INTO layer_metadata VALUES (?,?,?,?,?,?,?,?,?)",
+                        (layer_dataset_id(ds, name), ver, html_to_text(meta.get("title")), html_to_text(meta.get("summary")),
+                         html_to_text(meta.get("description")), html_to_text(meta.get("credits")), html_to_text(meta.get("tags")),
+                         html_to_text(meta.get("accessConstraints")), "PACKAGE/DATASET_INVENTORY_AND_SCHEMA.json"))
+    final = integrity.get("verifications", {}).get("final_location", {})
+    if final:
+        con.execute("INSERT INTO verifications VALUES (?,?,?,?,?,?)",
+                    (ds, ver, reg.get("registered_at"), final.get("status"), "registration",
+                     f"{final.get('checked_files')} dosya SHA-256 (nihai konum)"))
+    for item, state, detail in metadata_completeness(record, quality, profile):
         con.execute("INSERT INTO metadata_completeness VALUES (?,?,?,?,?)", (ds, ver, item, state, detail))
 
     # Kayıt yapısındaki sorunlar (değiştirilmez; yalnız raporlanır).
@@ -332,6 +417,14 @@ def _index_runs(con: sqlite3.Connection, data_root: Path) -> None:
                     (r.get("item_id"), r.get("package_name"), r.get("dataset_id"), r.get("version"),
                      r["status"]["technical"], r["status"]["quality"], r["status"]["independent_audit"], r["status"]["access"],
                      r.get("started_at"), r.get("finished_at"), str(result)))
+    log = catalog.data_dir(data_root) / "_ingest" / "verifications.jsonl"
+    for line in log.read_text(encoding="utf-8").splitlines() if log.is_file() else []:
+        try:
+            v = json.loads(line)
+        except ValueError:
+            continue
+        con.execute("INSERT INTO verifications VALUES (?,?,?,?,?,?)",
+                    (v.get("dataset_id"), v.get("version"), v.get("at"), v.get("status"), "reverification", v.get("detail")))
 
 
 def rebuild_index(data_root: Path) -> Path:
@@ -351,7 +444,14 @@ def rebuild_index(data_root: Path) -> Path:
                 con.execute("UPDATE datasets SET latest_registered=? WHERE dataset_id=?", (d.get("latest_registered"), d.get("dataset_id")))
             _index_runs(con, data_root)
             con.commit()
-        os.replace(tmp, target)
+        for attempt in range(20):  # Windows: okuyan bir bağlantı açıkken yer değiştirme kısa süre reddedilebilir
+            try:
+                os.replace(tmp, target)
+                break
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                time.sleep(0.1 * (attempt + 1))
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise

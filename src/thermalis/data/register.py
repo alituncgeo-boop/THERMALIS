@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import gc
+import json
 import os
 import secrets
 import time
@@ -557,4 +558,16 @@ def verify_registered(data_root: Path, dataset_id: str, version: str) -> list[Ch
             counted = info["layers"].get(name, {}).get("feature_count")
             checks.append(Check("VEC-07", f"Sayım: {name}", PASS if counted == layer["expected_feature_count"] else FAIL,
                                 f"sayılan {counted} · beklenen {layer['expected_feature_count']}"))
+    _log_verification(data_root, dataset_id, version, checks)
     return checks
+
+
+def _log_verification(data_root: Path, dataset_id: str, version: str, checks: list[Check]) -> None:
+    """Yeniden doğrulama sonucunu yalnız eklenen günlüğe yazar (sürüm klasörüne dokunmaz)."""
+    path = catalog.data_dir(data_root) / "_ingest" / "verifications.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {"at": _utc_now(), "dataset_id": dataset_id, "version": version,
+             "status": PASS if all(c.status == PASS for c in checks) else FAIL,
+             "detail": "; ".join(f"{c.id} {c.status}: {c.detail}" for c in checks)}
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")

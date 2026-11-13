@@ -234,14 +234,63 @@ def test_app_startup_scans_folder_and_detects_new_packages(incoming: Path, data_
         assert {d["version"] for d in client.get("/api/data/catalog").json()["datasets"]} == {"1.0.0"}  # katalogda son sürüm
 
 
+def test_loose_archive_is_unsupported_input_not_a_failure(incoming: Path, data_root: Path, tmp_path: Path, monkeypatch) -> None:
+    archive = incoming / "HD99_PACKAGE_v1.0.0.zip"
+    archive.write_bytes(b"PK\x03\x04" + b"\x00" * 64)
+    digest, mtime = sha256_file(archive), archive.stat().st_mtime_ns
+    w = _watcher(incoming, data_root)
+    w.scan_once()
+    first = _state(data_root, archive.name)
+    assert (first["state"], first["reason_code"]) == ("UNSUPPORTED_INPUT", "ARCHIVE")
+    for _ in range(3):
+        w.scan_once()
+    again = _state(data_root, archive.name)
+    assert again["updated_at"] == first["updated_at"] and len(again["history"]) == 1  # tekrar uyarı/kayıt üretilmez
+    assert sha256_file(archive) == digest and archive.stat().st_mtime_ns == mtime  # açılmadı, taşınmadı, değişmedi
+    assert not (catalog.data_dir(data_root) / "_ingest" / "runs").exists()  # entegrasyon denemesi değil
+    counts = _client(tmp_path, monkeypatch, data_root).get("/api/data/intake").json()["counts"]
+    assert (counts["UNSUPPORTED_INPUT"], counts["FAILED"], counts["BLOCKED"]) == (1, 0, 0)
+    archive.write_bytes(b"PK\x03\x04" + b"\x01" * 80)  # arşiv değişirse yeniden değerlendirilir (yine işlenmez)
+    w.scan_once()
+    assert _state(data_root, archive.name)["state"] == "UNSUPPORTED_INPUT"
+
+
+def test_legacy_archive_block_is_reclassified_and_real_failures_are_kept(incoming: Path, data_root: Path) -> None:
+    path = catalog.data_dir(data_root) / "_ingest" / "intake.json"
+    path.parent.mkdir(parents=True)
+    legacy = {
+        "schema_version": "1.0",
+        "packages": {
+            "C:/IN/old.zip": {"name": "old.zip", "path": "C:/IN/old.zip", "state": "BLOCKED", "reason_code": "ARCHIVE", "reason": "arşiv",
+                              "history": [{"at": "2026-11-12T12:00:00Z", "state": "BLOCKED", "reason_code": "ARCHIVE", "reason": "arşiv"}]},
+            "C:/IN/conflict": {"name": "conflict", "path": "C:/IN/conflict", "state": "BLOCKED", "reason_code": "VERSION_CONFLICT",
+                               "item_id": "run-1-01", "history": [{"state": "BLOCKED"}]},
+            "C:/IN/corrupt": {"name": "corrupt", "path": "C:/IN/corrupt", "state": "FAILED", "reason_code": "check_failed",
+                              "item_id": "run-1-02", "history": [{"state": "FAILED"}]},
+        },
+    }
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    intake = load_intake(data_root)
+    old = intake["packages"]["C:/IN/old.zip"]
+    assert old["state"] == "UNSUPPORTED_INPUT" and old["reclassified_from"] == "BLOCKED"
+    assert [h["state"] for h in old["history"]] == ["BLOCKED", "UNSUPPORTED_INPUT"]  # geçmiş korunur
+    assert intake["packages"]["C:/IN/conflict"]["state"] == "BLOCKED"
+    assert intake["packages"]["C:/IN/corrupt"]["state"] == "FAILED"
+    assert intake["schema_version"] == "1.1"
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == "1.0"  # okuma dosyayı değiştirmez
+
+
 def test_every_intake_state_and_reason_code_is_translated() -> None:
+    from thermalis.data.catalog_index import RECORD_ISSUE_CODES
     from thermalis.data.ingest import CANDIDATE_TO_INTAKE, INTAKE_STATES, REASON_CODES
 
     locales = Path(__file__).resolve().parents[1] / "frontend" / "src" / "i18n" / "locales"
     for lang in ("tr", "en"):
-        intake = json.loads((locales / f"{lang}.json").read_text(encoding="utf-8"))["data"]["intake"]
+        data = json.loads((locales / f"{lang}.json").read_text(encoding="utf-8"))["data"]
+        intake = data["intake"]
         assert set(INTAKE_STATES) <= set(intake["state"]), lang
         assert set(REASON_CODES) <= set(intake["reason"]), lang
+        assert set(RECORD_ISSUE_CODES) <= set(data["meta"]["issue"]) & set(data["meta"]["issue_detail"]), lang
     assert set(CANDIDATE_TO_INTAKE) - {"READY"} <= set(REASON_CODES)  # READY nedensiz işlenir
 
 

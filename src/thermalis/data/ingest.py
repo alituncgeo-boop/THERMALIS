@@ -332,7 +332,10 @@ def discover(incoming: Path, data_root: Path, settle_seconds: float = DEFAULT_SE
             out.append(Candidate(entry, "UNSAFE", "package_root_is_link"))
         elif entry.is_file():
             if entry.name.lower().endswith(ARCHIVE_SUFFIXES):
-                out.append(Candidate(entry, "ARCHIVE", "arşivler otomatik açılmaz; güvenlik için kullanıcı klasöre çıkarmalı"))
+                st = os.lstat(entry)
+                signature = hashlib.sha256(f"{entry.name}|{st.st_size}|{st.st_mtime_ns}".encode("utf-8")).hexdigest()
+                out.append(Candidate(entry, "ARCHIVE", "bağımsız arşiv: otomatik açılmaz, taşınmaz, silinmez; paket olarak "
+                                                        "işlenmesi için bir klasöre çıkarılmalı", signature=signature))
         elif entry.is_dir():
             out.append(assess(entry, data_root, settle_seconds))
     return out
@@ -626,7 +629,10 @@ PROCESS_STATES = ("VERSION_CONFLICT", "UNSAFE", "INVALID")  # READY dışında s
 # Bu teknik kabul durumudur; bilimsel kalite (QA_*) ayrı eksendir ve buraya karışmaz.
 
 INTAKE_STATES = ("DETECTED", "WAITING_FOR_COMPLETION", "VALIDATING", "READY", "INGESTING", "REGISTERED",
-                 "ALREADY_REGISTERED", "BLOCKED", "ADAPTER_REQUIRED", "FAILED")
+                 "ALREADY_REGISTERED", "BLOCKED", "ADAPTER_REQUIRED", "FAILED", "UNSUPPORTED_INPUT")
+# UNSUPPORTED_INPUT: gelen klasörde paket olarak teslim edilmemiş girdi (ör. bağımsız .zip arşivi).
+# Bir entegrasyon hatası değildir; açılmaz, taşınmaz, silinmez ve başarısız sayılmaz.
+INTAKE_SCHEMA_VERSION = "1.1"
 # Arayüzün çevirdiği neden kodları (frontend locale'lerinde data.intake.reason.<kod>; test kontrol eder).
 REASON_CODES = (
     "ALREADY_REGISTERED", "ARCHIVE", "SETTLING", "INCOMPLETE", "NOT_A_PACKAGE", "STABILITY_CHECK", "UNSAFE", "INVALID",
@@ -637,7 +643,7 @@ RETRYABLE_STATES = ("BLOCKED", "ADAPTER_REQUIRED", "FAILED")
 IN_FLIGHT_STATES = ("VALIDATING", "INGESTING")
 CANDIDATE_TO_INTAKE = {
     "READY": "READY", "SETTLING": "WAITING_FOR_COMPLETION", "INCOMPLETE": "WAITING_FOR_COMPLETION",
-    "NOT_A_PACKAGE": "WAITING_FOR_COMPLETION", "ARCHIVE": "BLOCKED", "UNSAFE": "BLOCKED", "VERSION_CONFLICT": "BLOCKED",
+    "NOT_A_PACKAGE": "WAITING_FOR_COMPLETION", "ARCHIVE": "UNSUPPORTED_INPUT", "UNSAFE": "BLOCKED", "VERSION_CONFLICT": "BLOCKED",
     "INVALID": "FAILED", "ALREADY_REGISTERED": "ALREADY_REGISTERED",
 }
 # Aynı süreçteki iş parçacıkları (izleyici + elle ekleme) sırayla çalışır; süreçler arası IngestLock dosyasıdır.
@@ -648,19 +654,38 @@ def intake_path(data_root: Path) -> Path:
     return ingest_dir(data_root) / "intake.json"
 
 
+def _migrate_intake(intake: dict[str, Any]) -> dict[str, Any]:
+    """1.0 → 1.1: bağımsız arşivler BLOCKED değil UNSUPPORTED_INPUT olarak sınıflanır.
+
+    Yalnız hiç işlenmemiş (``item_id`` yok) ve neden kodu ARCHIVE olan kayıtlar uyarlanır; geçmiş
+    korunur ve yeniden sınıflama geçmişe eklenir. Gerçek BLOCKED/FAILED kayıtlarına dokunulmaz.
+    """
+    if intake.get("schema_version") == INTAKE_SCHEMA_VERSION:
+        return intake
+    for key, entry in intake["packages"].items():
+        if entry.get("state") == "BLOCKED" and entry.get("reason_code") == "ARCHIVE" and not entry.get("item_id"):
+            entry["history"] = (entry.get("history", []) + [{
+                "at": _utc_now(), "state": "UNSUPPORTED_INPUT", "reason_code": "ARCHIVE",
+                "reason": "yeniden sınıflandı: BLOCKED → UNSUPPORTED_INPUT (bağımsız arşiv bir entegrasyon hatası değildir)"}])[-20:]
+            entry.update(state="UNSUPPORTED_INPUT", reclassified_from="BLOCKED", state_since=_utc_now())
+    intake["schema_version"] = INTAKE_SCHEMA_VERSION
+    return intake
+
+
 def load_intake(data_root: Path) -> dict[str, Any]:
     path = intake_path(data_root)
     if path.is_file():
         try:
             data = read_json(path)
             if isinstance(data, dict) and isinstance(data.get("packages"), dict):
-                return data
+                return _migrate_intake(data)
         except (OSError, ValueError):
             pass
-    return {"schema_version": "1.0", "packages": {}}
+    return {"schema_version": INTAKE_SCHEMA_VERSION, "packages": {}}
 
 
 def _save_intake(data_root: Path, intake: dict[str, Any]) -> None:
+    intake["schema_version"] = INTAKE_SCHEMA_VERSION
     intake["updated_at"] = _utc_now()
     write_json_atomic(intake_path(data_root), intake)
 
@@ -782,6 +807,8 @@ def run_ingest(incoming: Path, data_root: Path, *, settle_seconds: float = DEFAU
                     prev.update(present=True, updated_at=_utc_now())  # kendi kaydettiğimiz paket: REGISTERED kalır
                 elif state in RETRYABLE_STATES and same and prev.get("state") == state and not retry_failed:
                     prev.update(present=True, reason_code=prev.get("reason_code") or c.state)
+                elif state == "UNSUPPORTED_INPUT" and same and prev.get("state") == state:
+                    prev["present"] = True  # değişmemiş bağımsız girdi: her taramada yeni kayıt/uyarı üretilmez
                 elif c.state in PROCESS_STATES:
                     to_process.append(c)  # güvenlik/yapı/sürüm sorunu: sonuç raporuyla birlikte kaydedilir
                 else:

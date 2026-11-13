@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CatalogItem } from "../api";
-import { categories, filterCatalog, intakeBuckets, isMissing, latestRegistered, matchKey } from "./dataModel";
+import { categories, filterCatalog, intakeBuckets, isMissing, latestRegistered, matchKey, pageOf, sortCatalog } from "./dataModel";
 
 function item(overrides: Partial<CatalogItem>): CatalogItem {
   return {
@@ -42,11 +42,33 @@ describe("katalog arama ve filtre / catalog search and filter", () => {
   });
 });
 
+describe("sıralama ve sayfalama / sorting and paging", () => {
+  const title = (i: CatalogItem) => i.layer_name;
+  it("başlığa, kayıt sayısına ve tarihe göre sıralar; eksik değer sona", () => {
+    expect(sortCatalog([hoods, districts], "title", "asc", title).map((i) => i.layer_name)).toEqual(["Districts", "Neighborhoods"]);
+    expect(sortCatalog([districts, hoods], "features", "desc", title).map((i) => i.feature_count)).toEqual([39, 39]);
+    const big = item({ id: "X/BIG", feature_count: 979 });
+    const none = item({ id: "X/NONE", feature_count: null });
+    expect(sortCatalog([none, districts, big], "features", "desc", title).map((i) => i.id)).toEqual(["X/BIG", districts.id, "X/NONE"]);
+    expect(sortCatalog([none, districts, big], "features", "asc", title).map((i) => i.id)).toEqual([districts.id, "X/BIG", "X/NONE"]);
+    expect(sortCatalog([districts, hoods], "registered", "desc", title)[0]).toBe(hoods);
+  });
+
+  it("sayfalar doğru aralığı verir", () => {
+    const many = Array.from({ length: 60 }, (_, n) => n);
+    expect(pageOf(many, 0, 25)).toMatchObject({ pages: 3, from: 1, to: 25 });
+    expect(pageOf(many, 2, 25)).toMatchObject({ pages: 3, from: 51, to: 60 });
+    expect(pageOf(many, 9, 25)).toMatchObject({ page: 2 });
+    expect(pageOf([], 0, 25)).toMatchObject({ pages: 1, from: 0, to: 0, rows: [] });
+  });
+});
+
 describe("işlem durumu özetleri / intake summaries", () => {
-  it("durumlar doğru kümelere düşer", () => {
-    expect(intakeBuckets({ VALIDATING: 1, INGESTING: 1, WAITING_FOR_COMPLETION: 2, DETECTED: 1, ADAPTER_REQUIRED: 1, FAILED: 1, BLOCKED: 2, REGISTERED: 5 }))
-      .toEqual({ inProgress: 2, waiting: 3, adapterRequired: 1, failed: 3 });
-    expect(intakeBuckets({})).toEqual({ inProgress: 0, waiting: 0, adapterRequired: 0, failed: 0 });
+  it("durumlar doğru kümelere düşer; bağımsız arşiv başarısızlık sayılmaz", () => {
+    expect(intakeBuckets({ VALIDATING: 1, INGESTING: 1, WAITING_FOR_COMPLETION: 2, DETECTED: 1, ADAPTER_REQUIRED: 1, FAILED: 1, BLOCKED: 2, REGISTERED: 5, UNSUPPORTED_INPUT: 1 }))
+      .toEqual({ inProgress: 2, waiting: 3, adapterRequired: 1, failed: 3, ignored: 1 });
+    expect(intakeBuckets({ UNSUPPORTED_INPUT: 1, ALREADY_REGISTERED: 1 })).toEqual({ inProgress: 0, waiting: 0, adapterRequired: 0, failed: 0, ignored: 1 });
+    expect(intakeBuckets({})).toEqual({ inProgress: 0, waiting: 0, adapterRequired: 0, failed: 0, ignored: 0 });
   });
 
   it("son kayıt gerçek tarihten seçilir; 0 eksik sayılmaz", () => {

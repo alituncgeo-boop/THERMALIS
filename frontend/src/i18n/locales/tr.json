@@ -120,6 +120,14 @@
     "all_categories": "Tüm kategoriler",
     "result_count": "{{shown}} / {{total}} veri seti",
     "no_match": "Arama ve filtreye uyan veri seti yok.",
+    "clear_search": "Aramayı temizle",
+    "search_short": "Veri seti ara…",
+    "pager": {
+      "range": "{{from}}–{{to}} / {{total}} (katalog: {{all}})",
+      "page": "Sayfa {{page}} / {{pages}}",
+      "prev": "Önceki sayfa",
+      "next": "Sonraki sayfa"
+    },
     "title_pattern": "{{place}} {{layer}}",
     "extent": "x {{minx}} – {{maxx}} · y {{miny}} – {{maxy}} ({{crs}})",
     "col": {
@@ -179,13 +187,14 @@
       "watching": "{{folder}} her {{seconds}} sn izleniyor",
       "last_scan": "son tarama {{at}}",
       "scan_now": "Şimdi tara",
-      "show_packages": "Paketleri göster ({{count}}, {{attention}} ilgi bekliyor)",
-      "hide_packages": "Paketleri gizle",
+      "details": "Paketler ({{count}})",
+      "latest_line": "Son entegrasyon: {{title}} · {{at}}",
+      "no_integration": "Henüz entegrasyon yok",
+      "ignored_line": "Paket protokolü dışında {{count}} girdi (başarısızlık değildir; paketlere bakın)",
       "manual": "elle",
       "retry": "Yeniden dene",
       "stat": {
-        "registered": "Kayıtlı veri seti",
-        "latest": "Son entegre edilen",
+        "registered": "Veri seti",
         "in_progress": "Devam eden",
         "waiting": "Bekleyen",
         "adapter_required": "Adaptör gerekli",
@@ -200,7 +209,7 @@
       },
       "reason": {
         "ALREADY_REGISTERED": "Aynı paket (manifest SHA-256) zaten kayıtlı; yeniden kaydedilmez.",
-        "ARCHIVE": "Arşivler otomatik açılmaz. Bir klasöre çıkarın.",
+        "ARCHIVE": "Bağımsız arşiv: paket olarak teslim edilmediği için işlenmez; açılmaz, taşınmaz, silinmez. Eklemek için bir paket klasörüne çıkarın.",
         "SETTLING": "Bekleniyor: dosyalar yakın zamanda değişti (kopyalama sürüyor olabilir).",
         "INCOMPLETE": "Eksik: manifestteki dosyalar yok, boyutlar farklı veya geçici/tamamlanmamış işareti var.",
         "NOT_A_PACKAGE": "Henüz PACKAGE/MANIFEST.json veya RELEASE_STATUS.json yok; işlenmez.",
@@ -234,7 +243,8 @@
         "ALREADY_REGISTERED": "Zaten kayıtlı",
         "BLOCKED": "Engellendi",
         "ADAPTER_REQUIRED": "Adaptör gerekli",
-        "FAILED": "Başarısız"
+        "FAILED": "Başarısız",
+        "UNSUPPORTED_INPUT": "Paket değil"
       }
     },
     "detail": {
@@ -246,7 +256,20 @@
       "category": "Kategori",
       "source_institution": "Kaynak kurum",
       "format": "Format",
-      "features": "{{n}} kayıt",
+      "geometry": "Geometri",
+      "geometry_value": "{{geometry}} · {{n}} kayıt",
+      "asset": "Dosya varlığı",
+      "copy_id": "Veri seti kimliğini kopyala",
+      "panel_label": "Seçili veri seti",
+      "show_more": "Devamını göster",
+      "show_less": "Daha az göster",
+      "technical_details": "Teknik ayrıntılar (parmak izi, varlık, CRS WKT)",
+      "group": {
+        "identity": "Kimlik ve sürüm",
+        "source": "Kaynak",
+        "technical": "Mekânsal ve teknik",
+        "status": "Bütünlük ve metadata"
+      },
       "crs": "CRS",
       "spatial": "Mekânsal kapsam",
       "temporal": "Zamansal kapsam",
@@ -364,6 +387,13 @@
         "FINDING_ORIGIN_NOT_RECORDED": "Bulgu kökeni kaydedilmemiş",
         "PACKAGE_FINGERPRINT_NOT_RECORDED": "Paket parmak izi kaydedilmemiş",
         "RECORD_FILES_WRITABLE": "Kayıt dosyaları yazılabilir"
+      },
+      "issue_detail": {
+        "DUPLICATE_EXCEPTION_ID": "{{detail}}",
+        "LAYER_STATUS_COUNTED_AS_EXCEPTION": "İstisna listesinde {{detail}} katman durumu kaydı var",
+        "FINDING_ORIGIN_NOT_RECORDED": "Köken her kaydın kaynak dosyasından çıkarıldı",
+        "PACKAGE_FINGERPRINT_NOT_RECORDED": "{{detail}} üzerinden hesaplandı (eski kayıt)",
+        "RECORD_FILES_WRITABLE": "{{detail}}"
       },
       "origin": {
         "package_exception_register": "Paket defteri",

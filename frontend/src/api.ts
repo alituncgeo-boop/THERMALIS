@@ -104,6 +104,42 @@ export interface DatasetMetadata {
   registration_checks: Row[];
 }
 
+export interface SemanticField {
+  layer_dataset_id: string;
+  version: string;
+  field: string;
+  data_type: string | null;
+  source_type: string | null;
+  alias: string | null;
+  meaning: string | null;
+  description: string | null;
+  status: "SOURCE_DECLARED" | "INFERRED_UNVERIFIED" | "USER_VERIFIED" | "UNKNOWN";
+  origin: string | null;
+  source_ref: string | null;
+  unit: string | null;
+  unit_status: string | null;
+  unit_origin: string | null;
+  domain_name: string | null;
+  null_meaning: string | null;
+  null_meaning_status: string | null;
+  null_count: number | null;
+  verified_at: string | null;
+  verified_by: string | null;
+  proposal_compatibility: string | null;
+}
+
+export interface SemanticVerification {
+  dataset_id: string;
+  version: string;
+  field: string;
+  meaning?: string;
+  description?: string;
+  unit?: string;
+  null_meaning?: string;
+  note?: string;
+  verified_by?: string;
+}
+
 export interface IntakePackage {
   name: string;
   path: string;
@@ -202,6 +238,10 @@ export const api = {
   verify: (dataset_id: string, version: string) =>
     request<{ status: string }>("/data/verify", { method: "POST", body: JSON.stringify({ dataset_id, version }) }),
   exportUrl: (format: "json" | "csv") => `/api/data/export?format=${format}`,
+  semantics: (id: string, version: string) =>
+    request<{ fields: SemanticField[] }>(`/data/v1/semantics?${new URLSearchParams({ id, version })}`),
+  verifySemantic: (body: SemanticVerification) =>
+    request<SemanticField>("/data/v1/semantics/verify", { method: "POST", body: JSON.stringify(body) }),
 };
 
 const KNOWN_ERRORS = new Set([
@@ -216,6 +256,8 @@ const KNOWN_ERRORS = new Set([
   "package_dataset_mismatch",
   "dataset_not_found",
   "intake_item_not_retryable",
+  "field_not_found",
+  "version_not_found",
   "validation",
   "network",
 ]);

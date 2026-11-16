@@ -65,6 +65,8 @@
     "package_dataset_mismatch": "This package belongs to a different dataset. A new version must carry the same dataset ID.",
     "dataset_not_found": "Dataset not found in the catalog.",
     "intake_item_not_retryable": "This package cannot be retried.",
+    "field_not_found": "Field not found in this dataset version.",
+    "version_not_found": "This version is not registered.",
     "validation": "The information entered is not valid.",
     "network": "Cannot reach the server. Is THERMALIS running?",
     "unknown": "An unexpected error occurred."
@@ -439,6 +441,34 @@
         "container_member": "Container member",
         "document": "Document",
         "data_file": "Data file"
+      }
+    },
+    "semantic": {
+      "title": "Semantic dictionary ({{count}} fields)",
+      "note_status": "Meaning, unit and null meaning each carry their own status. A data type alone is not a meaning; unverified proposals are never shown as fact.",
+      "meaning": "Meaning",
+      "unit": "Unit",
+      "description": "Description",
+      "null_meaning": "Null / NoData meaning",
+      "note": "Note",
+      "verified_by": "Verified by",
+      "status_col": "Status",
+      "verify": "Verify",
+      "save": "Save verification",
+      "verify_title": "Verify field: {{field}}",
+      "verify_help": "The verification is stored permanently for this dataset version. The source records are not changed; the previous definition stays in the history.",
+      "proposal_note": "This meaning is an unverified proposal ({{origin}}). Check it against this version before confirming.",
+      "verified_line": "verified by {{by}} · {{at}}",
+      "special_records": "{{count}} documented special records (see QA)",
+      "status": {
+        "SOURCE_DECLARED": "Source declared",
+        "USER_VERIFIED": "User verified",
+        "INFERRED_UNVERIFIED": "Unverified proposal",
+        "UNKNOWN": "Unknown"
+      },
+      "compat": {
+        "compatible": "Carried from the previous version: type and domain unchanged",
+        "changed": "Carried from the previous version: type or domain CHANGED"
       }
     },
     "role": {

@@ -1,7 +1,7 @@
-import { AlertTriangle, ArrowLeft } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { AlertTriangle, ArrowLeft, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { api, errorKey, type DatasetMetadata } from "../api";
+import { api, errorKey, type DatasetMetadata, type SemanticField, type SemanticVerification } from "../api";
 import { PageHeader } from "../components/Layout";
 import { RequireProject } from "../components/projects";
 import { AccessBadge, QualityPill, useDataFormat } from "./DataCatalog";
@@ -68,6 +68,137 @@ function cell(value: unknown, f: ReturnType<typeof useDataFormat>): ReactNode {
   if (typeof value === "number") return f.number(value, 6);
   if (typeof value === "boolean") return value ? "✓" : "✗";
   return String(value);
+}
+
+/* ---------- anlamsal veri sözlüğü ---------- */
+function SemanticStatus({ status }: { status: string | null }) {
+  const { t } = useDataFormat();
+  if (!status) return <span className="cell-muted">—</span>;
+  return <span className={`sem-badge sem-${status.toLowerCase()}`}>{t(`data.semantic.status.${status}`, { defaultValue: status })}</span>;
+}
+
+function VerifyDialog({ field, onClose, onSaved }: { field: SemanticField; onClose: () => void; onSaved: () => void }) {
+  const { t } = useDataFormat();
+  const [meaning, setMeaning] = useState(field.meaning ?? "");
+  const [unit, setUnit] = useState(field.unit ?? "");
+  const [description, setDescription] = useState(field.description ?? "");
+  const [nullMeaning, setNullMeaning] = useState("");
+  const [note, setNote] = useState("");
+  const [by, setBy] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    const body: SemanticVerification = { dataset_id: field.layer_dataset_id, version: field.version, field: field.field };
+    if (meaning.trim()) body.meaning = meaning.trim();
+    if (unit.trim() && unit.trim() !== field.unit) body.unit = unit.trim();
+    if (description.trim()) body.description = description.trim();
+    if (nullMeaning.trim()) body.null_meaning = nullMeaning.trim();
+    if (note.trim()) body.note = note.trim();
+    if (by.trim()) body.verified_by = by.trim();
+    try {
+      await api.verifySemantic(body);
+      onSaved();
+    } catch (err) {
+      setError(errorKey(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="dialog-backdrop" role="presentation" onClick={onClose}>
+      <form className="dialog" role="dialog" aria-modal="true" aria-labelledby="sem-dialog-title" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <div className="dialog-header">
+          <h2 id="sem-dialog-title">{t("data.semantic.verify_title", { field: field.field })}</h2>
+          <button type="button" className="icon-button" onClick={onClose} aria-label={t("common.cancel")}><X size={16} /></button>
+        </div>
+        <p className="muted small-gap">{t("data.semantic.verify_help")}</p>
+        {field.status === "INFERRED_UNVERIFIED" && <p className="notice-warn">{t("data.semantic.proposal_note", { origin: field.origin ?? "" })}</p>}
+        <label className="field">{t("data.semantic.meaning")}<textarea rows={3} value={meaning} onChange={(e) => setMeaning(e.target.value)} /></label>
+        <label className="field">{t("data.semantic.unit")}<input value={unit} onChange={(e) => setUnit(e.target.value)} /></label>
+        <label className="field">{t("data.semantic.description")}<textarea rows={2} value={description} onChange={(e) => setDescription(e.target.value)} /></label>
+        <label className="field">{t("data.semantic.null_meaning")}<input value={nullMeaning} onChange={(e) => setNullMeaning(e.target.value)} /></label>
+        <label className="field">{t("data.semantic.note")}<input value={note} onChange={(e) => setNote(e.target.value)} /></label>
+        <label className="field">{t("data.semantic.verified_by")}<input value={by} onChange={(e) => setBy(e.target.value)} /></label>
+        {error && <p className="form-error">{t(error)}</p>}
+        <div className="dialog-actions">
+          <button type="button" className="ghost-button" onClick={onClose}>{t("common.cancel")}</button>
+          <button type="submit" className="primary-button" disabled={busy || !meaning.trim()}>{t("data.semantic.save")}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function SemanticSection({ datasetId, version }: { datasetId: string; version: string }) {
+  const f = useDataFormat();
+  const { t } = f;
+  const [fields, setFields] = useState<SemanticField[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<SemanticField | null>(null);
+  const load = useCallback(() => {
+    api.semantics(datasetId, version).then((r) => setFields(r.fields)).catch((err) => setError(errorKey(err)));
+  }, [datasetId, version]);
+  useEffect(load, [load]);
+  const counts = (fields ?? []).reduce<Record<string, number>>((acc, x) => ({ ...acc, [x.status]: (acc[x.status] ?? 0) + 1 }), {});
+
+  return (
+    <Section title={t("data.semantic.title", { count: fields?.length ?? 0 })}>
+      <p className="muted small-gap">{t("data.semantic.note_status")}</p>
+      {error && <p className="form-error">{t(error)}</p>}
+      {fields && (
+        <>
+          <div className="chip-row">
+            {(["SOURCE_DECLARED", "USER_VERIFIED", "INFERRED_UNVERIFIED", "UNKNOWN"] as const).map((s) => (
+              <span key={s} className="chip">{t(`data.semantic.status.${s}`)}: {f.number(counts[s] ?? 0)}</span>
+            ))}
+          </div>
+          <div className="table-scroll">
+            <table className="data-table compact semantic-table">
+              <thead>
+                <tr>
+                  <th>{t("data.meta.col.field")}</th>
+                  <th>{t("data.meta.col.type")}</th>
+                  <th>{t("data.semantic.meaning")}</th>
+                  <th>{t("data.semantic.status_col")}</th>
+                  <th>{t("data.semantic.unit")}</th>
+                  <th>{t("data.meta.col.domain")}</th>
+                  <th>{t("data.semantic.null_meaning")}</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {fields.map((x) => (
+                  <tr key={x.field}>
+                    <td className="mono small-cell">{x.field}{x.alias && x.alias !== x.field && <div className="cell-muted">{x.alias}</div>}</td>
+                    <td className="small-cell">{x.data_type ?? "—"}</td>
+                    <td className="small-cell" title={x.source_ref ?? undefined}>
+                      {x.meaning ?? <span className="cell-muted">{t("data.value.unknown")}</span>}
+                      {x.proposal_compatibility && <div className="cell-muted">{t(`data.semantic.compat.${x.proposal_compatibility}`, { defaultValue: x.proposal_compatibility })}</div>}
+                      {x.verified_at && <div className="cell-muted">{t("data.semantic.verified_line", { by: x.verified_by ?? "—", at: f.date(x.verified_at) })}</div>}
+                    </td>
+                    <td><SemanticStatus status={x.status} /></td>
+                    <td className="small-cell">{x.unit ? <>{x.unit} <SemanticStatus status={x.unit_status} /></> : <span className="cell-muted">—</span>}</td>
+                    <td className="mono small-cell">{x.domain_name ?? "—"}</td>
+                    <td className="small-cell">{x.null_meaning ? (x.null_meaning.startsWith("DOCUMENTED_SPECIAL_RECORDS:")
+                      ? t("data.semantic.special_records", { count: Number(x.null_meaning.split(":")[1]) }) : x.null_meaning) : <span className="cell-muted">—</span>}</td>
+                    <td>{x.data_type !== "OID" && x.data_type !== "Geometry" && (
+                      <button type="button" className="ghost-button small-button" onClick={() => setEditing(x)}>{t("data.semantic.verify")}</button>
+                    )}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+      {editing && <VerifyDialog field={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
+    </Section>
+  );
 }
 
 export function DatasetMetadataPage() {
@@ -204,6 +335,8 @@ export function DatasetMetadataPage() {
           render={(key, row) => (key === "nullable" ? (row.nullable === null ? "—" : row.nullable ? t("data.meta.yes") : t("data.meta.no")) : undefined)} />
         <p className="muted small">{t("data.meta.null_note")}</p>
       </Section>
+
+      <SemanticSection datasetId={item.id} version={item.version} />
 
       <Section title={t("data.meta.dictionary", { count: meta.dictionary.length })} collapsible open={false}>
         <Table columns={[{ key: "field", label: t("data.meta.col.field"), mono: true }, { key: "alias", label: t("data.meta.col.alias") },

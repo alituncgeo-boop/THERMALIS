@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from ..text import match_key
-from . import catalog
+from . import catalog, semantics
 from .integrity import sha256_file
 
 INDEX_FILE = "catalog_index.sqlite"
@@ -70,7 +70,18 @@ CREATE TABLE dictionary(
   nullable TEXT, required TEXT, coded_domain TEXT, description TEXT,
   PRIMARY KEY(dataset_id, version, layer_name, field));
 CREATE TABLE domains(dataset_id TEXT, version TEXT, name TEXT, description TEXT, code_count INTEGER,
-  PRIMARY KEY(dataset_id, version, name));
+  domain_type TEXT, field_type TEXT, source_file TEXT, PRIMARY KEY(dataset_id, version, name));
+CREATE TABLE semantic_fields(
+  layer_dataset_id TEXT, version TEXT, dataset_id TEXT, layer_name TEXT, field TEXT, data_type TEXT, source_type TEXT,
+  alias TEXT, meaning TEXT, description TEXT, status TEXT, origin TEXT, source_ref TEXT,
+  unit TEXT, unit_system TEXT, unit_status TEXT, unit_origin TEXT, domain_name TEXT, domain_origin TEXT,
+  null_meaning TEXT, null_meaning_status TEXT, null_meaning_ref TEXT, null_count INTEGER,
+  valid_min TEXT, valid_max TEXT, scale TEXT, "offset" TEXT, verified_at TEXT, verified_by TEXT, proposal_compatibility TEXT,
+  PRIMARY KEY(layer_dataset_id, version, field));
+CREATE TABLE field_relations(dataset_id TEXT, version TEXT, from_layer_dataset_id TEXT, from_field TEXT,
+  to_layer_dataset_id TEXT, to_field TEXT, kind TEXT, verified INTEGER, evidence TEXT, source_ref TEXT);
+CREATE TABLE layer_profile(layer_dataset_id TEXT, version TEXT, declared_role TEXT, source_ref TEXT,
+  PRIMARY KEY(layer_dataset_id, version));
 CREATE TABLE domain_values(dataset_id TEXT, version TEXT, domain TEXT, code TEXT, label TEXT,
   PRIMARY KEY(dataset_id, version, domain, code));
 CREATE TABLE assets(
@@ -88,7 +99,7 @@ CREATE TABLE quality_gates(dataset_id TEXT, version TEXT, gate_id TEXT, status T
 CREATE TABLE checks(dataset_id TEXT, version TEXT, seq INTEGER, check_id TEXT, title TEXT, status TEXT, detail TEXT,
   PRIMARY KEY(dataset_id, version, seq));
 CREATE TABLE relations(subject TEXT, predicate TEXT, object TEXT, dataset_id TEXT, version TEXT, evidence TEXT);
-CREATE TABLE metadata_completeness(dataset_id TEXT, version TEXT, item TEXT, state TEXT, detail TEXT,
+CREATE TABLE metadata_completeness(dataset_id TEXT, version TEXT, item TEXT, state TEXT, detail TEXT, grp TEXT,
   PRIMARY KEY(dataset_id, version, item));
 CREATE TABLE record_issues(dataset_id TEXT, version TEXT, code TEXT, detail TEXT, evidence TEXT);
 CREATE TABLE layer_metadata(layer_dataset_id TEXT, version TEXT, title TEXT, summary TEXT, description TEXT,
@@ -190,9 +201,26 @@ def finding_kind(category: str) -> str:
     return "finding"
 
 
+# Tamlık öğelerinin grubu: teknik / köken ve erişim / anlamsal / bilimsel kullanım. Puanlama yok; durumlar ayrı okunur.
+COMPLETENESS_GROUPS = {
+    "dataset_id": "technical", "version": "technical", "crs_wkt": "technical", "crs_unit": "technical",
+    "crs_consistency": "technical", "feature_counts": "technical", "spatial_extent": "technical",
+    "vector_fields": "technical", "coded_domains": "technical", "data_dictionary": "technical",
+    "source_owner": "provenance_access", "provenance_origin_path": "provenance_access", "license_document": "provenance_access",
+    "access_classification": "provenance_access", "access_authorization": "provenance_access",
+    "semantic_definitions": "semantic",
+    "temporal_coverage": "scientific_use", "quality_findings": "scientific_use", "quality_gates": "scientific_use",
+}
+
+
 def metadata_completeness(record: dict[str, Any], quality: dict[str, Any],
-                          profile: dict[str, Any] | None = None) -> list[tuple[str, str, str]]:
-    """(öğe, durum, ayrıntı). Durumlar: present | partial | missing | unknown | not_applicable. Hiçbir değer uydurulmaz."""
+                          profile: dict[str, Any] | None = None,
+                          semantic_entries: list[dict[str, Any]] | None = None) -> list[tuple[str, str, str]]:
+    """(öğe, durum, ayrıntı). Durumlar: present | partial | missing | unknown | not_applicable | conflict.
+
+    ``missing``/``unknown`` eksik bilgidir (hata değildir); ``conflict`` kaynaklar arasında çelişki, yani
+    hatalı olabilecek bilgidir. Hiçbir değer uydurulmaz.
+    """
     src = record.get("source", {})
     access = record.get("access", {})
     crs = record.get("crs", {})
@@ -233,9 +261,20 @@ def metadata_completeness(record: dict[str, Any], quality: dict[str, Any],
     item("vector_fields", bool(layers) and all(l.get("fields") for l in layers.values()), f"{len(layers)} katman")
     item("coded_domains", bool(record.get("domains")) or None, f"{len(record.get('domains', []))} domain")
     item("data_dictionary", bool(dictionary), f"{len(dictionary)} satır")
-    described = [r for r in dictionary if (r.get("description") or "").strip()]
-    out.append(("semantic_definitions", "present" if dictionary and len(described) == len(dictionary) else ("missing" if not described else "partial"),
-                f"{len(described)}/{len(dictionary)} alan tanımlı"))
+    if semantic_entries is not None:
+        out.append(("semantic_definitions", *semantics_completeness(semantic_entries)))
+    else:
+        described = [r for r in dictionary if (r.get("description") or "").strip()]
+        out.append(("semantic_definitions", "present" if dictionary and len(described) == len(dictionary) else ("missing" if not described else "partial"),
+                    f"{len(described)}/{len(dictionary)} alan tanımlı"))
+    crs_flags = [l.get("crs_matches_package_wkt") for l in layers.values() if l.get("geometry_type") not in (None, "None")]
+    if crs_flags:
+        bad = [n for n, l in layers.items() if l.get("crs_matches_package_wkt") is False]
+        out.append(("crs_consistency", "conflict" if bad else "present", ", ".join(bad) or "katman CRS = paket WKT"))
+    counted = {n: (l.get("feature_count"), l.get("expected_feature_count")) for n, l in layers.items()}
+    if counted:
+        bad = [f"{n}: {c} ≠ {e}" for n, (c, e) in counted.items() if e is not None and c != e]
+        out.append(("feature_counts", "conflict" if bad else "present", "; ".join(bad) or "sayılan = beyan"))
     item("quality_findings", "exceptions" in quality, f"{len(quality.get('exceptions', []))} kayıt")
     item("quality_gates", bool(quality.get("gates")), f"{len(quality.get('gates', []))} kapı")
     return out
@@ -260,10 +299,10 @@ def registered_fingerprint(folder: Path) -> str | None:
     return _registered_fingerprint(folder, _read(folder / "version.json"))[0]
 
 
-def _index_version(con: sqlite3.Connection, folder: Path) -> None:
+def _index_version(con: sqlite3.Connection, folder: Path) -> list[dict[str, Any]] | None:
     record = _read(folder / "version.json")
     if record.get("registration", {}).get("status") != "REGISTERED":
-        return
+        return None
     quality = _read(folder / "quality.json")
     integrity = _read(folder / "integrity.json")
     ds, ver = record["dataset_id"], record["version"]
@@ -328,7 +367,9 @@ def _index_version(con: sqlite3.Connection, folder: Path) -> None:
                      row.get("nullable"), row.get("required"), row.get("coded_domain") or None, row.get("description") or None))
     for d in record.get("domains", []):
         values = d.get("coded_values", {}) or {}
-        con.execute("INSERT INTO domains VALUES (?,?,?,?,?)", (ds, ver, d.get("name"), d.get("description"), len(values)))
+        con.execute("INSERT INTO domains VALUES (?,?,?,?,?,?,?,?)",
+                    (ds, ver, d.get("name"), d.get("description"), len(values), d.get("domain_type"), d.get("field_type"),
+                     "PACKAGE/CODED_DOMAINS.json (GDB ile birebir: DOM-01)"))
         for code, label in values.items():
             con.execute("INSERT INTO domain_values VALUES (?,?,?,?,?)", (ds, ver, d.get("name"), str(code), label))
 
@@ -388,8 +429,22 @@ def _index_version(con: sqlite3.Connection, folder: Path) -> None:
         con.execute("INSERT INTO verifications VALUES (?,?,?,?,?,?)",
                     (ds, ver, reg.get("registered_at"), final.get("status"), "registration",
                      f"{final.get('checked_files')} dosya SHA-256 (nihai konum)"))
-    for item, state, detail in metadata_completeness(record, quality, profile):
-        con.execute("INSERT INTO metadata_completeness VALUES (?,?,?,?,?)", (ds, ver, item, state, detail))
+    pp, pp_rel = semantics.passport(folder, record)
+    for name in record.get("layers", {}):
+        role = semantics.passport_layer(pp, name).get("role")
+        if role:
+            con.execute("INSERT INTO layer_profile VALUES (?,?,?,?)",
+                        (layer_dataset_id(ds, name), ver, role, f"{pp_rel}#contents.feature_classes[{name}].role"))
+    for j in semantics.join_relationships(pp):
+        (fl, ff), (tl, tf) = (str(j["from"]).split(".", 1) + [""])[:2], (str(j["to"]).split(".", 1) + [""])[:2]
+        if fl in layer_names and tl in layer_names:
+            con.execute("INSERT INTO field_relations VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (ds, ver, layer_dataset_id(ds, fl), ff, layer_dataset_id(ds, tl), tf, j.get("kind"),
+                         None if j.get("cardinality_verified") is None else int(bool(j.get("cardinality_verified"))),
+                         j.get("evidence"), f"{pp_rel}#contents.join_relationships"))
+    sem_entries = semantics.source_entries(folder, record, quality)
+    for item, state, detail in metadata_completeness(record, quality, profile, sem_entries):
+        con.execute("INSERT INTO metadata_completeness VALUES (?,?,?,?,?,?)", (ds, ver, item, state, detail, COMPLETENESS_GROUPS.get(item)))
 
     # Kayıt yapısındaki sorunlar (değiştirilmez; yalnız raporlanır).
     issues: list[tuple[str, str, str]] = []
@@ -410,6 +465,7 @@ def _index_version(con: sqlite3.Connection, folder: Path) -> None:
         issues.append(("RECORD_FILES_WRITABLE", ", ".join(writable), str(folder)))
     for code, detail, evidence in issues:
         con.execute("INSERT INTO record_issues VALUES (?,?,?,?,?)", (ds, ver, code, detail, evidence))
+    return sem_entries
 
 
 def _index_runs(con: sqlite3.Connection, data_root: Path) -> None:
@@ -430,6 +486,44 @@ def _index_runs(con: sqlite3.Connection, data_root: Path) -> None:
                     (v.get("dataset_id"), v.get("version"), v.get("at"), v.get("status"), "reverification", v.get("detail")))
 
 
+SEMANTIC_COLUMNS = ("layer_dataset_id", "version", "dataset_id", "layer_name", "field", "data_type", "source_type", "alias",
+                    "meaning", "description", "status", "origin", "source_ref", "unit", "unit_system", "unit_status",
+                    "unit_origin", "domain_name", "domain_origin", "null_meaning", "null_meaning_status", "null_meaning_ref",
+                    "null_count", "valid_min", "valid_max", "scale", "offset", "verified_at", "verified_by", "proposal_compatibility")
+
+
+def _index_semantics(con: sqlite3.Connection, data_root: Path, collected: list[tuple[str, str, str, list[dict[str, Any]]]]) -> None:
+    """Kaynak anlamsal girdileri + kalıcı kullanıcı doğrulamaları + önceki sürümden öneriler (kayıt sırasıyla)."""
+    ordered = [(ds, ver, entries) for _, ver, ds, entries in sorted(collected, key=lambda c: (c[0], c[1]))]
+    resolved = semantics.resolve(ordered, semantics.load_verifications(data_root), layer_dataset_id)
+    placeholders = ",".join("?" * len(SEMANTIC_COLUMNS))
+    cols = ",".join(f'"{c}"' for c in SEMANTIC_COLUMNS)
+    for e in resolved:
+        con.execute(f"INSERT OR REPLACE INTO semantic_fields ({cols}) VALUES ({placeholders})",
+                    tuple(None if e.get(c) is None else (str(e[c]) if c in ("valid_min", "valid_max", "scale", "offset") else e[c])
+                          for c in SEMANTIC_COLUMNS))
+    # Anlamsal tamlık, kullanıcı doğrulamaları uygulandıktan sonraki duruma göre güncellenir.
+    by_version: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for e in resolved:
+        by_version.setdefault((e["dataset_id"], e["version"]), []).append(e)
+    for (ds, ver), entries in by_version.items():
+        state, detail = semantics_completeness(entries)
+        con.execute("UPDATE metadata_completeness SET state=?, detail=? WHERE dataset_id=? AND version=? AND item='semantic_definitions'",
+                    (state, detail, ds, ver))
+
+
+def semantics_completeness(entries: list[dict[str, Any]]) -> tuple[str, str]:
+    """Yapısal alanlar (OID, geometri) hariç: anlamı kaynakta beyanlı veya kullanıcıca doğrulanmış alan oranı."""
+    fields = [e for e in entries if e.get("data_type") not in ("OID", "Geometry")]
+    counts = Counter(e.get("status") for e in fields)
+    known = counts[semantics.SOURCE_DECLARED] + counts[semantics.USER_VERIFIED]
+    detail = (f"{known}/{len(fields)} alan · kaynak {counts[semantics.SOURCE_DECLARED]} · kullanıcı {counts[semantics.USER_VERIFIED]}"
+              f" · doğrulanmamış öneri {counts[semantics.INFERRED_UNVERIFIED]} · bilinmiyor {counts[semantics.UNKNOWN]}")
+    if not fields or known == 0:
+        return "missing", detail
+    return ("present" if known == len(fields) else "partial"), detail
+
+
 def rebuild_index(data_root: Path) -> Path:
     """Dizini kayıtlardan baştan üretir ve tek adımda yerine koyar."""
     target = index_path(data_root)
@@ -440,8 +534,13 @@ def rebuild_index(data_root: Path) -> Path:
         with closing(sqlite3.connect(tmp)) as con:
             con.executescript(SCHEMA)
             con.execute("INSERT INTO meta VALUES ('schema_version', ?)", (INDEX_SCHEMA_VERSION,))
+            collected = []
             for folder in _version_dirs(data_root):
-                _index_version(con, folder)
+                entries = _index_version(con, folder)
+                if entries is not None:
+                    rec = _read(folder / "version.json")
+                    collected.append((rec["registration"].get("registered_at") or "", rec["version"], rec["dataset_id"], entries))
+            _index_semantics(con, data_root, collected)
             for dataset_file in sorted((catalog.data_dir(data_root) / "datasets").rglob("dataset.json")) if (catalog.data_dir(data_root) / "datasets").is_dir() else []:
                 d = _read(dataset_file)
                 con.execute("UPDATE datasets SET latest_registered=? WHERE dataset_id=?", (d.get("latest_registered"), d.get("dataset_id")))
@@ -501,7 +600,7 @@ def query_record_issues(data_root: Path, dataset_id: str | None = None, version:
 
 
 def query_completeness(data_root: Path, dataset_id: str, version: str) -> list[dict[str, Any]]:
-    return _query(data_root, "SELECT item, state, detail FROM metadata_completeness WHERE dataset_id=? AND version=? ORDER BY rowid",
+    return _query(data_root, "SELECT item, state, detail, grp AS \"group\" FROM metadata_completeness WHERE dataset_id=? AND version=? ORDER BY rowid",
                   (dataset_id, version))
 
 

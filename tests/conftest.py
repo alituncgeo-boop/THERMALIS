@@ -26,7 +26,7 @@ def _square(x: float, y: float, size: float = 100.0):
     return ogr.CreateGeometryFromWkt(f"POLYGON(({x} {y},{x + size} {y},{x + size} {y + size},{x} {y + size},{x} {y}))")
 
 
-def _build_gdb(path: Path) -> None:
+def _build_gdb(path: Path, extra_field: str | None = None) -> None:
     from osgeo import gdal, ogr, osr
 
     gdal.UseExceptions()
@@ -61,6 +61,8 @@ def _build_gdb(path: Path) -> None:
     hoods.CreateField(yaka)
     hoods.CreateField(ogr.FieldDefn("KIMLIKNO", ogr.OFTInteger))
     hoods.CreateField(ad)
+    if extra_field:
+        hoods.CreateField(ogr.FieldDefn(extra_field, ogr.OFTReal))
     rows = [(1421, 1, 40001, "FİKİRTEPE"), (1421, 1, 40002, "HASANPAŞA"), (1103, 1, None, "ORMAN")]
     for i, (district, side, ident, label) in enumerate(rows):
         f = ogr.Feature(hoods.GetLayerDefn())
@@ -104,12 +106,12 @@ def write_manifest(root: Path) -> None:
 def build_package(root: Path, *, counts: dict[str, int] | None = None, null_oids: list[int] | None = None,
                   version: str = "1.0.0-rc1", release_overrides: dict | None = None,
                   extra_register_rows: list[list] | None = None, passport: dict | None = None,
-                  layer_metadata: dict[str, dict] | None = None) -> Path:
+                  layer_metadata: dict[str, dict] | None = None, extra_field: str | None = None) -> Path:
     pkg = root / "PACKAGE"
     (pkg / "QA").mkdir(parents=True)
     src = root / "01_ADMIN" / "SOURCE"
     (src / "Admin.metadata" / "EVIDENCE").mkdir(parents=True)
-    _build_gdb(src / "Admin.gdb")
+    _build_gdb(src / "Admin.gdb", extra_field)
 
     counts = counts or {"Districts": 2, "Neighborhoods": 3, "Aux_Boundary": 1}
     release = {
@@ -142,6 +144,7 @@ def build_package(root: Path, *, counts: dict[str, int] | None = None, null_oids
         ("Neighborhoods", "OBJECTID", "OID", ""), ("Neighborhoods", "Shape", "Geometry", ""),
         ("Neighborhoods", "ILCEKN", "Integer", "Ilce_UAVT"), ("Neighborhoods", "YAKA", "SmallInteger", "YAKA"),
         ("Neighborhoods", "KIMLIKNO", "Integer", ""), ("Neighborhoods", "AD", "String", ""),
+        *([("Neighborhoods", extra_field, "Double", "")] if extra_field else []),
         ("Neighborhoods", "Shape_Length", "Double", ""), ("Neighborhoods", "Shape_Area", "Double", ""),
         ("Aux_Boundary", "OBJECTID", "OID", ""), ("Aux_Boundary", "Shape", "Geometry", ""),
         ("Aux_Boundary", "Shape_Length", "Double", ""), ("Aux_Boundary", "Shape_Area", "Double", ""),
@@ -175,6 +178,12 @@ def write_ready_marker(root: Path, sha: str | None = None) -> None:
     """Teslim protokolü: kopyalama bittiğinde paket köküne manifest özetiyle hazır işareti yazılır."""
     digest = sha or _sha(root / "PACKAGE" / "MANIFEST.json")
     (root / "THERMALIS_READY.json").write_text(json.dumps({"manifest_sha256": digest}), encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def allow_test_host(monkeypatch):
+    """Uygulama yalnız yerel ad kabul eder; test istemcisinin ana bilgisayar adı 'testserver'dır."""
+    monkeypatch.setenv("THERMALIS_ALLOWED_HOSTS", "127.0.0.1,localhost,testserver")
 
 
 @pytest.fixture()

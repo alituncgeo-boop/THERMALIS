@@ -59,5 +59,32 @@ def save_settings(settings: Settings) -> None:
     write_json_atomic(settings_path(), settings.model_dump())
 
 
+def component_token_path() -> Path:
+    return config_dir() / "component_token"
+
+
+def component_token() -> str:
+    """Yerel THERMALIS bileşenlerinin kısıtlı veri erişim belirteci.
+
+    Kullanıcının yapılandırma klasöründe tutulur (repoda ve veri kökünde değil); aynı kullanıcının
+    yerel bileşenleri okuyabilir, tarayıcıdaki sayfalar okuyamaz. İlk istekte rastgele üretilir.
+    """
+    path = component_token_path()
+    if path.is_file():
+        value = path.read_text(encoding="utf-8").strip()
+        if value:
+            return value
+    import secrets
+
+    value = secrets.token_urlsafe(32)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(value, encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:  # pragma: no cover - Windows'ta izin kullanıcı profiliyle sınırlıdır
+        pass
+    return value
+
+
 def effective_data_root(settings: Settings) -> Path:
     return Path(settings.data_root) if settings.data_root else default_data_root()

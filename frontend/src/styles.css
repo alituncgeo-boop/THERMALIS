@@ -261,6 +261,13 @@ button:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
 .ellipsis { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .small-text { font-size: 0.8rem; }
 .nowrap { white-space: nowrap; }
+.sem-badge { display: inline-block; padding: 2px 8px; border-radius: 8px; font-size: 0.72rem; font-weight: 600; border: 1px solid var(--line-strong); color: var(--text-2); white-space: nowrap; }
+.sem-source_declared { color: #4fe3a1; border-color: rgba(79, 227, 161, 0.45); }
+.sem-user_verified { color: var(--brand-cyan); border-color: rgba(56, 214, 245, 0.5); }
+.sem-inferred_unverified { color: #f5c26b; border-color: rgba(245, 165, 36, 0.5); border-style: dashed; }
+.sem-unknown { color: var(--text-3); }
+.semantic-table td:nth-child(3) { min-width: 260px; max-width: 460px; }
+.dialog textarea { resize: vertical; }
 .link-button { border: 0; background: none; padding: 0; margin-left: 6px; color: var(--brand-cyan); cursor: pointer; font-size: 0.82rem; }
 .menu-anchor { position: relative; }
 .menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 140px; display: flex; flex-direction: column; padding: 6px; border-radius: 12px; border: 1px solid var(--line-strong); background: var(--bg-2); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45); }

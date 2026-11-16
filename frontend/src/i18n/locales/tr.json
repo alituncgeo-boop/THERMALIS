@@ -65,6 +65,8 @@
     "package_dataset_mismatch": "Bu paket başka bir veri setine ait. Yeni sürüm aynı veri kimliğini taşımalı.",
     "dataset_not_found": "Veri seti katalogda bulunamadı.",
     "intake_item_not_retryable": "Bu paket yeniden denenemez.",
+    "field_not_found": "Alan bu veri seti sürümünde bulunamadı.",
+    "version_not_found": "Bu sürüm kayıtlı değil.",
     "validation": "Girilen bilgiler geçersiz.",
     "network": "Sunucuya ulaşılamadı. THERMALIS çalışıyor mu?",
     "unknown": "Beklenmeyen bir hata oluştu."
@@ -439,6 +441,34 @@
         "container_member": "Kapsayıcı üyesi",
         "document": "Belge",
         "data_file": "Veri dosyası"
+      }
+    },
+    "semantic": {
+      "title": "Anlamsal veri sözlüğü ({{count}} alan)",
+      "note_status": "Anlam, birim ve boş değer anlamının her birinin kendi durumu vardır. Veri tipi tek başına anlam değildir; doğrulanmamış öneriler kesin bilgi gibi gösterilmez.",
+      "meaning": "Anlam",
+      "unit": "Birim",
+      "description": "Açıklama",
+      "null_meaning": "Boş / NoData anlamı",
+      "note": "Not",
+      "verified_by": "Doğrulayan",
+      "status_col": "Durum",
+      "verify": "Doğrula",
+      "save": "Doğrulamayı kaydet",
+      "verify_title": "Alanı doğrula: {{field}}",
+      "verify_help": "Doğrulama bu veri seti sürümü için kalıcı olarak saklanır. Kaynak kayıtlar değişmez; önceki tanım geçmişte kalır.",
+      "proposal_note": "Bu anlam doğrulanmamış bir öneridir ({{origin}}). Onaylamadan önce bu sürüme uygunluğunu kontrol edin.",
+      "verified_line": "doğrulayan {{by}} · {{at}}",
+      "special_records": "{{count}} belgelenmiş özel kayıt (QA'ya bakın)",
+      "status": {
+        "SOURCE_DECLARED": "Kaynakta beyanlı",
+        "USER_VERIFIED": "Kullanıcı doğruladı",
+        "INFERRED_UNVERIFIED": "Doğrulanmamış öneri",
+        "UNKNOWN": "Bilinmiyor"
+      },
+      "compat": {
+        "compatible": "Önceki sürümden taşındı: tip ve domain aynı",
+        "changed": "Önceki sürümden taşındı: tip veya domain DEĞİŞTİ"
       }
     },
     "role": {

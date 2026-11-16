@@ -8,14 +8,16 @@ Hatalar arayüzün çevirebilmesi için makine okunur ``code`` ile döner.
 from __future__ import annotations
 
 import os
+import secrets
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__
 from .projects import (
@@ -81,6 +83,28 @@ class VerifyRequest(BaseModel):
     version: str
 
 
+class SemanticVerification(BaseModel):
+    """Yetkili kullanıcının alan anlamı doğrulaması; boş bırakılan öznitelik değiştirilmez."""
+    dataset_id: str
+    version: str
+    field: str
+    meaning: str | None = Field(default=None, max_length=2000)
+    description: str | None = Field(default=None, max_length=4000)
+    unit: str | None = Field(default=None, max_length=64)
+    unit_system: str | None = Field(default=None, max_length=64)
+    null_meaning: str | None = Field(default=None, max_length=1000)
+    valid_min: float | None = None
+    valid_max: float | None = None
+    scale: float | None = None
+    offset: float | None = None
+    note: str | None = Field(default=None, max_length=2000)
+    verified_by: str | None = Field(default=None, max_length=200)
+
+
+ALLOWED_HOSTS_DEFAULT = "127.0.0.1,localhost"
+TOKEN_HEADER = "X-Thermalis-Component-Token"
+
+
 def _error(status: int, code: str) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code})
 
@@ -127,6 +151,15 @@ def create_app(static_dir: Path | None = None, *, watch: bool | None = None) -> 
 
     app = FastAPI(title="THERMALIS", version=__version__, docs_url="/api/docs", openapi_url="/api/openapi.json", lifespan=lifespan)
     app.state.watcher = watcher
+    # Yalnız yerel ad: başka bir sitenin DNS yeniden bağlama ile yerel API'yi okumasını engeller.
+    hosts = [h.strip() for h in os.environ.get("THERMALIS_ALLOWED_HOSTS", ALLOWED_HOSTS_DEFAULT).split(",") if h.strip()]
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
+
+    def authorized(request: Request) -> bool:
+        from .settings import component_token
+
+        supplied = request.headers.get(TOKEN_HEADER, "")
+        return bool(supplied) and secrets.compare_digest(supplied, component_token())
 
     @app.get("/api/health")
     def health() -> dict:
@@ -291,6 +324,95 @@ def create_app(static_dir: Path | None = None, *, watch: bool | None = None) -> 
             raise _error(404, "dataset_not_found") from exc
         rebuild_index(root)
         return {"status": "PASS" if all(c.status == "PASS" for c in checks) else "FAIL", "checks": [c.as_dict() for c in checks]}
+
+    # ---- Bilimsel veri erişim sözleşmesi (v1) -----------------------------------------------------
+    # Diğer THERMALIS bileşenleri için kararlı, sürümlü uçlar. İş mantığı data/contract.py'dedir.
+    def _contract(call):
+        from .data.contract import NotFound
+
+        try:
+            return call()
+        except NotFound as exc:
+            raise _error(404, exc.code) from exc
+        except ValueError as exc:  # geçersiz kimlik biçimi
+            raise _error(400, "invalid_dataset_reference") from exc
+
+    def _root() -> Path:
+        return effective_data_root(load_settings())
+
+    @app.get("/api/data/v1/datasets")
+    def v1_datasets() -> list[dict]:
+        from .data import contract
+
+        return _contract(lambda: contract.list_datasets(_root()))
+
+    @app.get("/api/data/v1/versions")
+    def v1_versions(id: str) -> list[dict]:
+        from .data import contract
+
+        return _contract(lambda: contract.list_versions(_root(), id))
+
+    @app.get("/api/data/v1/descriptor")
+    def v1_descriptor(request: Request, id: str, version: str | None = None) -> dict:
+        from .data import contract
+
+        return _contract(lambda: contract.descriptor(_root(), id, version, authorized=authorized(request)))
+
+    @app.get("/api/data/v1/semantics")
+    def v1_semantics(id: str, version: str | None = None) -> dict:
+        from .data import contract
+
+        return _contract(lambda: contract.semantic_dictionary(_root(), id, version))
+
+    @app.get("/api/data/v1/field")
+    def v1_field(id: str, name: str, version: str | None = None) -> dict:
+        from .data import contract
+
+        return _contract(lambda: contract.field_info(_root(), id, version, name))
+
+    @app.get("/api/data/v1/domain")
+    def v1_domain(id: str, name: str, version: str | None = None) -> dict:
+        from .data import contract
+
+        return _contract(lambda: contract.domain_codes(_root(), id, version, name))
+
+    @app.get("/api/data/v1/qa")
+    def v1_qa(id: str, version: str | None = None) -> dict:
+        from .data import contract
+
+        return _contract(lambda: contract.quality(_root(), id, version))
+
+    @app.get("/api/data/v1/lineage")
+    def v1_lineage(request: Request, id: str, version: str | None = None) -> dict:
+        from .data import contract
+
+        return _contract(lambda: contract.lineage(_root(), id, version, authorized=authorized(request)))
+
+    @app.get("/api/data/v1/access")
+    def v1_access(request: Request, id: str, version: str | None = None) -> dict:
+        from .data import contract
+
+        return _contract(lambda: contract.access(_root(), id, version, authorized=authorized(request)))
+
+    @app.get("/api/data/v1/diff")
+    def v1_diff(id: str, to: str, from_: str = Query(alias="from")) -> dict:
+        from .data import contract
+
+        return _contract(lambda: contract.diff(_root(), id, from_, to))
+
+    @app.post("/api/data/v1/semantics/verify")
+    def v1_verify_semantics(payload: SemanticVerification) -> dict:
+        from .data import contract, semantics
+        from .data.catalog_index import rebuild_index
+
+        root = _root()
+        _contract(lambda: contract.field_info(root, payload.dataset_id, payload.version, payload.field))  # var olmalı
+        if payload.meaning is None and all(getattr(payload, k) is None for k in semantics.VERIFIABLE if k != "meaning"):
+            raise _error(400, "validation")
+        data = payload.model_dump(exclude_none=True)
+        semantics.append_verification(root, data)
+        rebuild_index(root)
+        return _contract(lambda: contract.field_info(root, payload.dataset_id, payload.version, payload.field))
 
     # ---- Otomatik paket kabulü --------------------------------------------------------------------
     @app.get("/api/data/intake")

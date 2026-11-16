@@ -124,6 +124,27 @@ def _inspect(ds, expected_wkt: str | None) -> dict[str, Any]:
     return {"layers": layers, "domains": domains}
 
 
+def read_records(path: Path, layer_name: str, fids: list[int], fields: list[str]) -> dict[int, dict[str, Any]]:
+    """Belirli FID'lerin (OBJECTID) yalnız istenen alanlarını salt okunur okur; olmayan alan ``None`` döner."""
+    ds = _open(path)
+    try:
+        layer = ds.GetLayerByName(layer_name)
+        if layer is None:
+            return {}
+        defn = layer.GetLayerDefn()
+        index = {f: defn.GetFieldIndex(f) for f in fields}
+        out: dict[int, dict[str, Any]] = {}
+        for fid in fids:
+            feature = layer.GetFeature(int(fid))
+            if feature is None:
+                continue
+            out[int(fid)] = {f: (feature.GetField(i) if i >= 0 and feature.IsFieldSetAndNotNull(i) else None) for f, i in index.items()}
+        feature = layer = None
+        return out
+    finally:
+        ds = None  # noqa: F841
+
+
 def null_field_fids(path: Path, layer_name: str, field_name: str) -> list[int]:
     """Bir alanı boş olan kayıtların FID (OBJECTID) listesi."""
     ds = _open(path)

@@ -58,7 +58,7 @@ def _layer(data_root: Path, dataset_id: str, version: str | None) -> dict[str, A
     alanında açıkça belirtilir). Dönen kayıt sürümün doğduğu paketin katman satırıdır:
     ``version`` = köken paket sürümü (pakete bağlı tablolar için), ``dataset_version`` = dataset sürümü.
     """
-    lv = _query(data_root, "SELECT * FROM layer_versions WHERE layer_dataset_id=? ORDER BY registered_at, dataset_version", (dataset_id,))
+    lv = _query(data_root, "SELECT * FROM layer_versions WHERE layer_dataset_id=? ORDER BY ordinal", (dataset_id,))
     if not lv:
         raise NotFound("dataset_not_found")
     resolved_from = None
@@ -93,7 +93,7 @@ def _links(dataset_id: str, version: str) -> dict[str, str]:
 def list_datasets(data_root: Path) -> list[dict[str, Any]]:
     out = []
     for d in _query(data_root, "SELECT * FROM datasets WHERE kind='layer' ORDER BY dataset_id"):
-        versions = _query(data_root, "SELECT dataset_version FROM layer_versions WHERE layer_dataset_id=? ORDER BY registered_at, dataset_version",
+        versions = _query(data_root, "SELECT dataset_version FROM layer_versions WHERE layer_dataset_id=? ORDER BY ordinal",
                           (d["dataset_id"],))
         if not versions:
             continue
@@ -109,7 +109,7 @@ def list_datasets(data_root: Path) -> list[dict[str, Any]]:
 
 def list_versions(data_root: Path, dataset_id: str) -> list[dict[str, Any]]:
     """Mantıksal veri setinin dataset sürümleri; her biri doğduğu paketi ve içinde bulunduğu paketleri gösterir."""
-    rows = _query(data_root, "SELECT * FROM layer_versions WHERE layer_dataset_id=? ORDER BY registered_at, dataset_version", (dataset_id,))
+    rows = _query(data_root, "SELECT * FROM layer_versions WHERE layer_dataset_id=? ORDER BY ordinal", (dataset_id,))
     if not rows:
         raise NotFound("dataset_not_found")
     out = []

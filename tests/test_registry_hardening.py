@@ -100,6 +100,45 @@ def test_index_is_rebuildable_and_versions_are_deterministic(incoming: Path, dat
     assert [(v["dataset_version"], v["content_id"]) for v in contract.list_versions(data_root, N)] == first
 
 
+def test_same_second_registrations_follow_semver_precedence() -> None:
+    import sqlite3
+
+    from thermalis.data.catalog_index import SCHEMA, _index_layer_versions, version_sort_key
+
+    assert sorted(["1.0.0", "1.0.0-rc1", "1.0.0-rc.10", "1.0.0-rc.2", "0.9.0", "draft"], key=version_sort_key) == [
+        "0.9.0", "1.0.0-rc.2", "1.0.0-rc.10", "1.0.0-rc1", "1.0.0", "draft"]
+    con = sqlite3.connect(":memory:")
+    con.executescript(SCHEMA)
+    same = "2026-11-16T07:46:22Z"  # hızlı makinede iki paket aynı saniyede kaydedilir
+
+    def pkg(version: str, n_content: str) -> dict:
+        return {"dataset_id": DS, "version": version, "registered_at": same, "facts_source": "version.json",
+                "facts": {"Districts": {"content_id": "d1", "algorithm": CONTENT_ID_ALGORITHM},
+                          "Neighborhoods": {"content_id": n_content, "algorithm": CONTENT_ID_ALGORITHM}}}
+
+    # Liste sırası bilinçli ters: sonuç girdi sırasına değil kayıt zamanı + SemVer önceliğine bağlı olmalı.
+    mapping = _index_layer_versions(con, [pkg("1.0.0", "n2"), pkg("1.0.0-rc1", "n1")])
+    assert mapping[(DS, "1.0.0-rc1", "Neighborhoods")] == ("1.0.0-rc1", "new")
+    assert mapping[(DS, "1.0.0", "Neighborhoods")] == ("1.0.0", "changed")
+    assert mapping[(DS, "1.0.0", "Districts")] == ("1.0.0-rc1", "unchanged")
+    rows = con.execute("SELECT dataset_version FROM layer_versions WHERE layer_dataset_id=? ORDER BY ordinal", (N,)).fetchall()
+    assert [r[0] for r in rows] == ["1.0.0-rc1", "1.0.0"]
+
+
+def test_index_from_older_schema_is_rebuilt_automatically(incoming: Path, data_root: Path) -> None:
+    import sqlite3
+
+    _register(incoming, data_root, "TT01_v1", passport=PASSPORT)
+    path = catalog.data_dir(data_root) / "catalog_index.sqlite"
+    from contextlib import closing
+
+    with closing(sqlite3.connect(path)) as con:  # önceki kod sürümünün ürettiği dizini taklit et
+        con.execute("DROP TABLE layer_versions")
+        con.execute("UPDATE meta SET value='1.0' WHERE key='schema_version'")
+        con.commit()
+    assert contract.descriptor(data_root, N)["dataset_version"] == "1.0.0-rc1"
+
+
 # ----------------------------------------------------------------------------- içerik kimliği
 
 def _gdb_with_rows(path: Path, rows: list[tuple[int, str]]) -> None:

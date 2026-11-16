@@ -38,7 +38,24 @@ from . import catalog, semantics
 from .integrity import sha256_file
 
 INDEX_FILE = "catalog_index.sqlite"
-INDEX_SCHEMA_VERSION = "1.0"
+INDEX_SCHEMA_VERSION = "2.0"  # 2.0: layer_versions, package_layers, metadata_conflicts
+
+
+_SEMVER = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
+
+
+def version_sort_key(version: str | None) -> tuple:
+    """SemVer 2.0 önceliği (1.0.0-rc1 < 1.0.0); SemVer olmayan etiketler sonda, ada göre.
+
+    Kayıt zamanı saniye çözünürlüklüdür; aynı saniyedeki kayıtlar bu anahtarla sıralanır
+    (salt metin sırası '1.0.0' < '1.0.0-rc1' verir ve sürüm türetmesini tersine çevirirdi).
+    """
+    m = _SEMVER.match(version or "")
+    if not m:
+        return (1, version or "")
+    pre = m.group(4)
+    pre_key = (1,) if pre is None else (0, tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in pre.split(".")))
+    return (0, int(m.group(1)), int(m.group(2)), int(m.group(3)), pre_key)
 # Kayıt yapısı sorun kodları (frontend: data.meta.issue.<kod> ve data.meta.issue_detail.<kod>; test kontrol eder).
 RECORD_ISSUE_CODES = ("DUPLICATE_EXCEPTION_ID", "LAYER_STATUS_COUNTED_AS_EXCEPTION", "FINDING_ORIGIN_NOT_RECORDED",
                       "PACKAGE_FINGERPRINT_NOT_RECORDED", "RECORD_FILES_WRITABLE")
@@ -84,6 +101,7 @@ CREATE TABLE semantic_fields(
 CREATE TABLE layer_versions(
   layer_dataset_id TEXT, dataset_version TEXT, content_id TEXT, content_algorithm TEXT, package_dataset_id TEXT,
   origin_package_version TEXT, registered_at TEXT, same_content_as TEXT, content_source TEXT,
+  ordinal INTEGER, -- kayıt sırası (zaman, ardından SemVer önceliği); sürüm listeleri bununla sıralanır
   PRIMARY KEY(layer_dataset_id, dataset_version));
 CREATE TABLE package_layers(
   package_dataset_id TEXT, package_version TEXT, layer_name TEXT, layer_dataset_id TEXT, dataset_version TEXT,
@@ -518,7 +536,7 @@ def _index_semantics(con: sqlite3.Connection, data_root: Path, collected: list[d
     kullanılır; değişmeyen katmanın sonraki paketteki kopyası yeni anlamsal kayıt üretmez.
     """
     ordered = []
-    for c in sorted(collected, key=lambda c: (c["registered_at"], c["version"])):
+    for c in sorted(collected, key=lambda c: (c["registered_at"], version_sort_key(c["version"]))):
         origin = [e for e in c["entries"] if mapping.get((c["dataset_id"], c["version"], e["layer_name"]), ("", "new"))[1] != "unchanged"]
         ordered.append((c["dataset_id"], c["version"], origin))
     content_ids = {(r[0], r[1]): r[2] for r in con.execute("SELECT layer_dataset_id, dataset_version, content_id FROM layer_versions")}
@@ -598,7 +616,8 @@ def _index_layer_versions(con: sqlite3.Connection, collected: list[dict[str, Any
     mapping: dict[tuple[str, str, str], tuple[str, str]] = {}
     latest: dict[str, dict[str, Any]] = {}
     seen: dict[tuple[str, str], str] = {}
-    for c in sorted(collected, key=lambda c: (c["dataset_id"], c["registered_at"], c["version"])):
+    ordinal = 0
+    for c in sorted(collected, key=lambda c: (c["dataset_id"], c["registered_at"], version_sort_key(c["version"]))):
         for name, facts in sorted(c["facts"].items()):
             lid = layer_dataset_id(c["dataset_id"], name)
             cid = facts.get("content_id")
@@ -608,9 +627,10 @@ def _index_layer_versions(con: sqlite3.Connection, collected: list[dict[str, Any
             else:
                 dv = c["version"]
                 change = "new" if prev is None else "changed"
-                con.execute("INSERT INTO layer_versions VALUES (?,?,?,?,?,?,?,?,?)",
+                ordinal += 1
+                con.execute("INSERT INTO layer_versions VALUES (?,?,?,?,?,?,?,?,?,?)",
                             (lid, dv, cid, facts.get("algorithm"), c["dataset_id"], c["version"], c["registered_at"],
-                             seen.get((lid, cid)) if cid else None, c["facts_source"]))
+                             seen.get((lid, cid)) if cid else None, c["facts_source"], ordinal))
                 latest[lid] = {"content_id": cid, "dataset_version": dv}
                 if cid:
                     seen.setdefault((lid, cid), dv)
@@ -664,9 +684,19 @@ def rebuild_index(data_root: Path) -> Path:
     return target
 
 
+def _index_schema(path: Path) -> str | None:
+    try:
+        with closing(sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)) as con:
+            row = con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+            return row[0] if row else None
+    except sqlite3.Error:
+        return None
+
+
 def _query(data_root: Path, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
     path = index_path(data_root)
-    if not path.is_file():
+    # Dizin türetilmiştir: yoksa veya eski kod sürümünün şemasıyla üretilmişse kayıtlardan yeniden kurulur.
+    if not path.is_file() or _index_schema(path) != INDEX_SCHEMA_VERSION:
         rebuild_index(data_root)
     # Salt okunur bağlantı: sorgular dizine yazamaz.
     with closing(sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)) as con:
@@ -723,6 +753,7 @@ def finding_summary(data_root: Path, dataset_id: str, version: str) -> dict[str,
 
 def query_versions(data_root: Path, dataset_id: str | None = None) -> list[dict[str, Any]]:
     sql = ("SELECT dataset_id, version, package_id, package_fingerprint, quality_status, access_class, registered_at, ingest_id "
-           # registered_at saniye çözünürlüklüdür; aynı saniyedeki kayıtlar sürüm adına göre sıralanır (belirlenimci).
-           "FROM dataset_versions WHERE (? IS NULL OR dataset_id=?) ORDER BY dataset_id, registered_at, version")
-    return _query(data_root, sql, (dataset_id, dataset_id))
+           "FROM dataset_versions WHERE (? IS NULL OR dataset_id=?)")
+    rows = _query(data_root, sql, (dataset_id, dataset_id))
+    # registered_at saniye çözünürlüklüdür; aynı saniyedeki kayıtlar SemVer önceliğiyle sıralanır (belirlenimci).
+    return sorted(rows, key=lambda r: (r["dataset_id"], r["registered_at"] or "", version_sort_key(r["version"])))

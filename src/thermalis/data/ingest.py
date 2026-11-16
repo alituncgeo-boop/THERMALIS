@@ -33,7 +33,8 @@ from typing import Any, Callable
 from ..storage import read_json, write_json_atomic
 from . import catalog
 from .adapters import classify_package, support_gap
-from .catalog_index import dataset_profile, metadata_completeness, rebuild_index, registered_fingerprint
+from . import semantics
+from .catalog_index import COMPLETENESS_GROUPS, dataset_profile, metadata_completeness, rebuild_index, registered_fingerprint
 from .integrity import is_ephemeral, sha256_file
 from .register import _make_writable, _move_dir, package_fingerprint, register_package
 from .transfer_package import PackageError, access_class_from_release, load_package
@@ -509,7 +510,9 @@ def ingest_package(candidate: Candidate, data_root: Path, item_id: str, *, audit
     # S07 kapsam, S08 anlamsal sözlük, S11 bulgu sayımı: kayıttan okunur, uydurulmaz.
     extents = {n: l.get("extent_native") for n, l in record["layers"].items() if l.get("role") == "core"}
     profile = dataset_profile(outcome.location, record)
-    result.completeness = [{"item": i, "state": s, "detail": d} for i, s, d in metadata_completeness(record, quality, profile)]
+    sem = semantics.source_entries(outcome.location, record, quality)
+    result.completeness = [{"item": i, "state": s, "detail": d, "group": COMPLETENESS_GROUPS.get(i)}
+                           for i, s, d in metadata_completeness(record, quality, profile, sem)]
     temporal = next(c for c in result.completeness if c["item"] == "temporal_coverage")
     result.set("S07", "PASS" if all(extents.values()) else "WARN",
                f"mekânsal kapsam (yerel CRS {record['crs'].get('native_crs_name')}): {len([e for e in extents.values() if e])}/{len(extents)} çekirdek katman"

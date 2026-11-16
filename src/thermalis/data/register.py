@@ -45,7 +45,7 @@ RECORD_FILES = ("version.json", "quality.json", "integrity.json")
 def package_fingerprint(package_root: Path) -> str:
     """Paket kimliğinin parmak izi: ``PACKAGE/MANIFEST.json`` dosyasının SHA-256'sı."""
     return sha256_file(Path(package_root) / "PACKAGE" / "MANIFEST.json")
-from .vector_inspect import gdal_available, inspect_vector, null_field_fids
+from .vector_inspect import gdal_available, inspect_vector, layer_facts, null_field_fids
 
 PASS, FAIL, WARN, INFO = "PASS", "FAIL", "WARN", "INFO"
 
@@ -205,6 +205,13 @@ class _Run:
             self.check("VEC-01", f"{source} salt okunur açıldı (OpenFileGDB)", True, f"{len(info['layers'])} katman")
             self.inspection[source] = info
             self._check_layers(source, info)
+            for name in info["layers"]:
+                # Katman bazlı sürümleme için kanıtlanabilir içerik kimliği (akış hâlinde, salt okunur).
+                facts = layer_facts(payload / source, name)
+                self.layer_records[name]["content"] = facts
+                self.check("VEC-08", f"İçerik kimliği hesaplandı: {name}", facts["feature_count"] == self.layer_records[name]["feature_count"],
+                           f"{facts['algorithm']} {facts['content_id'][:16]}… · {facts['feature_count']} kayıt",
+                           fatal=self.layer_records[name]["role"] == "core")
             self._check_domains(info)
             self._check_null_identities(payload / source, info)
 

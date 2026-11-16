@@ -81,9 +81,13 @@ def test_source_declared_unknown_and_inferred_are_distinguished(incoming: Path, 
 
 def test_no_passport_means_everything_unknown_not_invented(incoming: Path, data_root: Path) -> None:
     _register(incoming, data_root, "bare")
-    fields = contract.semantic_dictionary(data_root, N)["fields"]
-    assert {f["status"] for f in fields} == {semantics.UNKNOWN}
-    assert all(f["meaning"] is None for f in fields)
+    fields = {f["field"]: f for f in contract.semantic_dictionary(data_root, N)["fields"]}
+    # OBJECTID/Shape teknik alanlardır: türleri kaynak sözlükte bildirilir, bilimsel öznitelik eksikliği sayılmaz.
+    for name in ("OBJECTID", "Shape"):
+        assert fields[name]["field_role"] == "structural" and fields[name]["status"] == semantics.SOURCE_DECLARED
+    attributes = [f for f in fields.values() if f["field_role"] == "attribute"]
+    assert attributes and {f["status"] for f in attributes} == {semantics.UNKNOWN}
+    assert all(f["meaning"] is None for f in attributes)
     completeness = {c["item"]: c for c in contract.descriptor(data_root, N)["metadata_completeness"]}
     assert completeness["semantic_definitions"]["state"] == "missing" and completeness["semantic_definitions"]["group"] == "semantic"
 
@@ -91,11 +95,14 @@ def test_no_passport_means_everything_unknown_not_invented(incoming: Path, data_
 def test_user_verification_persists_across_index_rebuild_and_restart(incoming: Path, data_root: Path, tmp_path: Path, monkeypatch) -> None:
     _register(incoming, data_root, "TT01_v1", passport=PASSPORT)
     client = _client(tmp_path, monkeypatch, data_root)
+    from thermalis.settings import component_token
+
+    auth = {"X-Thermalis-Component-Token": component_token()}
     body = {"dataset_id": N, "version": "1.0.0-rc1", "field": "YAKA", "meaning": "Side of the Bosphorus (coded)", "verified_by": "tester"}
-    r = client.post("/api/data/v1/semantics/verify", json=body)
+    r = client.post("/api/data/v1/semantics/verify", json=body, headers=auth)
     assert r.status_code == 200 and r.json()["status"] == semantics.USER_VERIFIED and r.json()["verified_by"] == "tester"
-    assert client.post("/api/data/v1/semantics/verify", json={**body, "field": "NOPE"}).status_code == 404
-    assert client.post("/api/data/v1/semantics/verify", json={k: body[k] for k in ("dataset_id", "version", "field")}).status_code == 400
+    assert client.post("/api/data/v1/semantics/verify", json={**body, "field": "NOPE"}, headers=auth).status_code == 404
+    assert client.post("/api/data/v1/semantics/verify", json={k: body[k] for k in ("dataset_id", "version", "field")}, headers=auth).status_code == 400
     catalog_index = catalog.data_dir(data_root) / "catalog_index.sqlite"
     catalog_index.unlink()  # dizin türetilmiştir: silinip yeniden kurulsa bile doğrulama kalır
     rebuild_index(data_root)
@@ -108,7 +115,10 @@ def test_user_verification_persists_across_index_rebuild_and_restart(incoming: P
 
 def test_new_version_carries_verified_meaning_only_as_unverified_proposal(incoming: Path, data_root: Path, tmp_path: Path, monkeypatch) -> None:
     _register(incoming, data_root, "TT01_v1", passport=PASSPORT)
-    semantics.append_verification(data_root, {"dataset_id": N, "version": "1.0.0-rc1", "field": "YAKA", "meaning": "Side code", "unit": "-"})
+    bound = contract.field_info(data_root, N, "1.0.0-rc1", "YAKA")["content_id"]
+    assert bound and bound == contract.semantic_dictionary(data_root, N)["content_id"]
+    semantics.append_verification(data_root, {"dataset_id": N, "version": "1.0.0-rc1", "field": "YAKA", "meaning": "Side code", "unit": "-"},
+                                  content_id=bound)
     _register(incoming, data_root, "TT01_v2", passport=PASSPORT, version="1.0.0", extra_field="AREA_HA")
     old, new = _field(data_root, N, "YAKA", "1.0.0-rc1"), _field(data_root, N, "YAKA", "1.0.0")
     assert old["status"] == semantics.USER_VERIFIED  # önceki sürüm bilgisi kaybolmaz
@@ -119,6 +129,7 @@ def test_new_version_carries_verified_meaning_only_as_unverified_proposal(incomi
     assert ("AREA_HA", "added") in kinds and ("YAKA", "semantic_status_changed") in kinds and not diff["unchanged"]
     assert contract.diff(data_root, D, "1.0.0-rc1", "1.0.0")["unchanged"] is True  # değişmeyen katman ayırt edilir
     assert [v["version"] for v in contract.list_versions(data_root, N)] == ["1.0.0-rc1", "1.0.0"]
+    assert [v["version"] for v in contract.list_versions(data_root, D)] == ["1.0.0-rc1"]  # Districts yeni sürüm almadı
 
 
 # ----------------------------------------------------------------------------- domainler
@@ -130,7 +141,7 @@ def test_coded_domains_are_queryable_from_a_field(incoming: Path, data_root: Pat
     assert f["domain"]["name"] == "Ilce_UAVT" and f["domain"]["defined_in_source"] is True and f["domain"]["code_count"] == 2
     codes = client.get(f["domain"]["link"]).json()
     assert {c["code"]: c["label"] for c in codes["codes"]} == {"1103": "ADALAR", "1421": "KADIKÖY"}  # kaynakla birebir
-    assert codes["used_by_fields"] == [{"layer_dataset_id": N, "field": "ILCEKN"}]
+    assert codes["used_by_fields"] == [{"layer_dataset_id": N, "dataset_version": "1.0.0-rc1", "field": "ILCEKN"}]
     assert [j["to_field"] for j in f["field_relations"]] == ["KIMLIKNO"]
     assert client.get("/api/data/v1/domain", params={"id": N, "name": "NOT_A_DOMAIN"}).json()["detail"]["code"] == "domain_not_found"
 

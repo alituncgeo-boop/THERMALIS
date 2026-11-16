@@ -231,7 +231,10 @@ def test_app_startup_scans_folder_and_detects_new_packages(incoming: Path, data_
         _wait(lambda: sum(p["state"] == "REGISTERED" for p in client.get("/api/data/intake").json()["packages"]) == 2)
         status = client.get("/api/data/intake").json()
         assert status["watcher"]["enabled"] is True and status["counts"]["REGISTERED"] == 2
-        assert {d["version"] for d in client.get("/api/data/catalog").json()["datasets"]} == {"1.0.0"}  # katalogda son sürüm
+        listed = client.get("/api/data/catalog").json()["datasets"]
+        assert {d["package_version"] for d in listed} == {"1.0.0"}  # katalogda son paket
+        # İçerik değişmediği için katman (dataset) sürümleri 1.0.0-rc1'de kalır: gereksiz yeni sürüm yok.
+        assert {d["version"] for d in listed} == {"1.0.0-rc1"}
 
 
 def test_loose_archive_is_unsupported_input_not_a_failure(incoming: Path, data_root: Path, tmp_path: Path, monkeypatch) -> None:

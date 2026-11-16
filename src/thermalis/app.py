@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import secrets
 import threading
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -103,6 +104,29 @@ class SemanticVerification(BaseModel):
 
 ALLOWED_HOSTS_DEFAULT = "127.0.0.1,localhost"
 TOKEN_HEADER = "X-Thermalis-Component-Token"
+UI_COOKIE = "thermalis_ui_session"
+UI_CODE_TTL_SECONDS = 600
+
+# Arayüz oturumu: `thermalis start` tarayıcıyı tek kullanımlık bir kodla açar; kod HttpOnly, SameSite=Strict bir
+# oturum çerezine çevrilir. Yalnız bellekte tutulur (yeniden başlatmada düşer). Bu bir kullanıcı kimliği değil,
+# isteğin bu bilgisayarda programı başlatan kullanıcının tarayıcısından geldiğinin kanıtıdır.
+_UI_CODES: dict[str, float] = {}
+_UI_SESSIONS: set[str] = set()
+_UI_LOCK = threading.Lock()
+
+
+def issue_ui_code() -> str:
+    code = secrets.token_urlsafe(24)
+    with _UI_LOCK:
+        now = time.monotonic()
+        for k in [k for k, exp in _UI_CODES.items() if exp < now]:
+            _UI_CODES.pop(k, None)
+        _UI_CODES[code] = now + UI_CODE_TTL_SECONDS
+    return code
+
+
+class SessionClaim(BaseModel):
+    code: str = Field(max_length=200)
 
 
 def _error(status: int, code: str) -> HTTPException:
@@ -160,6 +184,35 @@ def create_app(static_dir: Path | None = None, *, watch: bool | None = None) -> 
 
         supplied = request.headers.get(TOKEN_HEADER, "")
         return bool(supplied) and secrets.compare_digest(supplied, component_token())
+
+    def ui_session(request: Request) -> bool:
+        value = request.cookies.get(UI_COOKIE, "")
+        with _UI_LOCK:
+            return bool(value) and value in _UI_SESSIONS
+
+    def verification_channel(request: Request) -> str | None:
+        """Anlamsal doğrulama yazabilecek yerel kanal; yoksa None (istek reddedilir)."""
+        if authorized(request):
+            return "component_token"
+        if ui_session(request):
+            return "ui_session"
+        return None
+
+    @app.get("/api/session")
+    def session_status(request: Request) -> dict:
+        channel = verification_channel(request)
+        return {"verification_allowed": channel is not None, "channel": channel, "identity_verified": False}
+
+    @app.post("/api/session/claim")
+    def session_claim(payload: SessionClaim, response: Response) -> dict:
+        with _UI_LOCK:
+            expiry = _UI_CODES.pop(payload.code, None)
+            if expiry is None or expiry < time.monotonic():
+                raise _error(403, "session_code_invalid")
+            session = secrets.token_urlsafe(32)
+            _UI_SESSIONS.add(session)
+        response.set_cookie(UI_COOKIE, session, httponly=True, samesite="strict", path="/api", secure=False)
+        return {"verification_allowed": True, "channel": "ui_session", "identity_verified": False}
 
     @app.get("/api/health")
     def health() -> dict:
@@ -401,16 +454,28 @@ def create_app(static_dir: Path | None = None, *, watch: bool | None = None) -> 
         return _contract(lambda: contract.diff(_root(), id, from_, to))
 
     @app.post("/api/data/v1/semantics/verify")
-    def v1_verify_semantics(payload: SemanticVerification) -> dict:
+    def v1_verify_semantics(payload: SemanticVerification, request: Request) -> dict:
         from .data import contract, semantics
         from .data.catalog_index import rebuild_index
 
+        channel = verification_channel(request)
+        if channel is None:
+            raise _error(403, "verification_not_authorized")
         root = _root()
-        _contract(lambda: contract.field_info(root, payload.dataset_id, payload.version, payload.field))  # var olmalı
+        current = _contract(lambda: contract.field_info(root, payload.dataset_id, payload.version, payload.field))  # var olmalı
+        if current["version"] != payload.version:
+            # Paket sürümüyle çözülen istekler doğrulama yazamaz: doğrulama yalnız tam dataset sürümüne bağlanır.
+            raise _error(409, "verification_version_mismatch")
         if payload.meaning is None and all(getattr(payload, k) is None for k in semantics.VERIFIABLE if k != "meaning"):
             raise _error(400, "validation")
-        data = payload.model_dump(exclude_none=True)
-        semantics.append_verification(root, data)
+        previous = {k: current.get(k) for k in (*semantics.VERIFIABLE, "status", "origin", "unit_status")}
+        try:
+            semantics.append_verification(root, payload.model_dump(exclude_none=True), auth_method=channel,
+                                          content_id=current.get("content_id"), previous=previous)
+        except ValueError as exc:
+            raise _error(409, "verification_log_broken") from exc
+        except TimeoutError as exc:
+            raise _error(503, "verification_log_busy") from exc
         rebuild_index(root)
         return _contract(lambda: contract.field_info(root, payload.dataset_id, payload.version, payload.field))
 

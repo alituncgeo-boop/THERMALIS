@@ -6,6 +6,8 @@ Hiçbir dönüşüm, onarım veya yazma yapılmaz. File Geodatabase yalnız
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -122,6 +124,69 @@ def _inspect(ds, expected_wkt: str | None) -> dict[str, Any]:
             entry["coded_values"] = {str(k): v for k, v in domain.GetEnumeration().items()}
         domains[name] = entry
     return {"layers": layers, "domains": domains}
+
+
+CONTENT_ID_ALGORITHM = "lc1-sha256-multiset"
+_MOD = 1 << 256
+
+
+def _canonical(value: Any) -> Any:
+    if isinstance(value, float):
+        return repr(value)
+    if isinstance(value, (list, tuple)):
+        return [_canonical(v) for v in value]
+    return value
+
+
+def layer_facts(path: Path, layer_name: str) -> dict[str, Any]:
+    """Katmanın kanıtlanabilir içerik kimliği ve yapısal bilgileri (salt okunur, akış hâlinde).
+
+    İçerik kimliği; şema (alan adı, tipi, alt tipi, genişliği, boş olabilirliği, domain adı),
+    kullanılan domainlerin kod tabloları, CRS WKT'si, geometri tipi ve her kaydın öznitelik +
+    geometri (ISO WKB) özetinden oluşur. Kayıt özetleri sıradan bağımsız biçimde toplanır
+    (SHA-256 değerlerinin 2^256 modunda toplamı + kayıt sayısı), böylece bellek kullanımı kayıt
+    sayısıyla büyümez. OBJECTID (FID) kimliğe girmez: taşınabilir anlam taşımaz.
+    """
+    from osgeo import ogr
+
+    ds = _open(path)
+    try:
+        layer = ds.GetLayerByName(layer_name)
+        if layer is None:
+            raise KeyError(layer_name)
+        defn = layer.GetLayerDefn()
+        fields = []
+        for i in range(defn.GetFieldCount()):
+            fd = defn.GetFieldDefn(i)
+            fields.append({"name": fd.GetName(), "type": fd.GetType(), "subtype": fd.GetSubType(), "width": fd.GetWidth(),
+                           "nullable": bool(fd.IsNullable()), "domain": fd.GetDomainName() or None})
+        domains = {}
+        for f in fields:
+            if f["domain"] and f["domain"] not in domains:
+                dom = ds.GetFieldDomain(f["domain"])
+                domains[f["domain"]] = sorted((str(k), v) for k, v in (dom.GetEnumeration() or {}).items()) if dom and dom.GetDomainType() == ogr.OFDT_CODED else None
+        srs = layer.GetSpatialRef()
+        header = json.dumps({"algorithm": CONTENT_ID_ALGORITHM, "fields": fields, "domains": domains,
+                             "geometry_type": ogr.GeometryTypeToName(layer.GetGeomType()),
+                             "crs_wkt": srs.ExportToWkt() if srs is not None else None}, sort_keys=True, ensure_ascii=False)
+        total, count = 0, 0
+        layer.ResetReading()
+        for feature in layer:
+            values = [_canonical(feature.GetField(i)) if feature.IsFieldSetAndNotNull(i) else None for i in range(len(fields))]
+            geom = feature.GetGeometryRef()
+            digest = hashlib.sha256(json.dumps(values, ensure_ascii=False, default=str).encode("utf-8") + b"\x00" +
+                                    (bytes(geom.ExportToIsoWkb()) if geom is not None else b"")).digest()
+            total = (total + int.from_bytes(digest, "big")) % _MOD
+            count += 1
+        feature = geom = None
+        content_id = hashlib.sha256(f"{header}\n{count}\n{total:064x}".encode("utf-8")).hexdigest()
+        result = {"content_id": content_id, "algorithm": CONTENT_ID_ALGORITHM, "feature_count": count,
+                  "schema_sha256": hashlib.sha256(header.encode("utf-8")).hexdigest(),
+                  "fid_column": layer.GetFIDColumn() or None, "geometry_column": layer.GetGeometryColumn() or None}
+        srs = layer = None
+        return result
+    finally:
+        ds = None  # noqa: F841
 
 
 def read_records(path: Path, layer_name: str, fids: list[int], fields: list[str]) -> dict[int, dict[str, Any]]:

@@ -10,6 +10,7 @@ import { DataPage } from "./pages/DataCatalog";
 import { DatasetMetadataPage } from "./pages/DatasetMetadata";
 import { City3dPage, IntelligencePage, LabDomainPage, LabPage, RiskPage } from "./pages/modules";
 import { SettingsPage } from "./pages/SettingsPage";
+import { claimSessionFromLocation } from "./session";
 import { AppProvider, useApp } from "./state";
 import "@fontsource-variable/montserrat";
 import "./styles.css";
@@ -46,12 +47,15 @@ function App() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <BrowserRouter>
-      <AppProvider>
-        <App />
-      </AppProvider>
-    </BrowserRouter>
-  </StrictMode>,
-);
+// Yerel doğrulama oturumu (varsa) arayüz çizilmeden önce alınır; kod adres çubuğundan silinir.
+void claimSessionFromLocation().finally(() => {
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <BrowserRouter>
+        <AppProvider>
+          <App />
+        </AppProvider>
+      </BrowserRouter>
+    </StrictMode>,
+  );
+});

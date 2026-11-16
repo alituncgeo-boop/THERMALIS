@@ -124,8 +124,44 @@ export interface SemanticField {
   null_meaning_status: string | null;
   null_count: number | null;
   verified_at: string | null;
+  /** Doğrulayanın beyan ettiği ad; kimlik doğrulaması değildir. */
   verified_by: string | null;
+  /** İsteğin geldiği yetkili yerel kanal (ui_session / component_token / in_process). */
+  verification_auth: string | null;
+  field_role: "structural" | "geometry_measure" | "attribute" | null;
   proposal_compatibility: string | null;
+}
+
+export interface VerificationLogIntegrity {
+  status: "ok" | "broken" | "empty";
+  entries: number;
+  valid: number;
+  broken_at_line: number | null;
+  reason: string | null;
+}
+
+export interface MetadataConflict {
+  kind: string;
+  subject: string | null;
+  item: string | null;
+  authoritative_value: string | null;
+  authoritative_source: string | null;
+  other_value: string | null;
+  other_source: string | null;
+  issue: string;
+}
+
+export interface SemanticDictionary {
+  fields: SemanticField[];
+  content_id: string | null;
+  verification_log: VerificationLogIntegrity | null;
+  conflicts: MetadataConflict[];
+}
+
+export interface SessionStatus {
+  verification_allowed: boolean;
+  channel: string | null;
+  identity_verified: boolean;
 }
 
 export interface SemanticVerification {
@@ -239,7 +275,9 @@ export const api = {
     request<{ status: string }>("/data/verify", { method: "POST", body: JSON.stringify({ dataset_id, version }) }),
   exportUrl: (format: "json" | "csv") => `/api/data/export?format=${format}`,
   semantics: (id: string, version: string) =>
-    request<{ fields: SemanticField[] }>(`/data/v1/semantics?${new URLSearchParams({ id, version })}`),
+    request<SemanticDictionary>(`/data/v1/semantics?${new URLSearchParams({ id, version })}`),
+  session: () => request<SessionStatus>("/session"),
+  claimSession: (code: string) => request<SessionStatus>("/session/claim", { method: "POST", body: JSON.stringify({ code }) }),
   verifySemantic: (body: SemanticVerification) =>
     request<SemanticField>("/data/v1/semantics/verify", { method: "POST", body: JSON.stringify(body) }),
 };
@@ -258,6 +296,11 @@ const KNOWN_ERRORS = new Set([
   "intake_item_not_retryable",
   "field_not_found",
   "version_not_found",
+  "verification_not_authorized",
+  "verification_version_mismatch",
+  "verification_log_broken",
+  "verification_log_busy",
+  "session_code_invalid",
   "validation",
   "network",
 ]);

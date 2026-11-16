@@ -25,12 +25,14 @@ import sqlite3
 import stat
 import tempfile
 import time
+from datetime import datetime, timezone
 from collections import Counter
 from contextlib import closing
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
+from ..storage import write_json_atomic
 from ..text import match_key
 from . import catalog, semantics
 from .integrity import sha256_file
@@ -60,6 +62,7 @@ CREATE TABLE layers(
   geometry_type TEXT, feature_count INTEGER, expected_feature_count INTEGER, crs_name TEXT, crs_matches INTEGER,
   extent_minx REAL, extent_miny REAL, extent_maxx REAL, extent_maxy REAL, extent_crs TEXT,
   null_geometry INTEGER, empty_geometry INTEGER, source_asset_id TEXT,
+  dataset_version TEXT, content_id TEXT, change TEXT,
   PRIMARY KEY(layer_dataset_id, version));
 CREATE TABLE fields(
   layer_dataset_id TEXT, version TEXT, name TEXT, type TEXT, alias TEXT, width INTEGER, nullable INTEGER,
@@ -77,7 +80,17 @@ CREATE TABLE semantic_fields(
   unit TEXT, unit_system TEXT, unit_status TEXT, unit_origin TEXT, domain_name TEXT, domain_origin TEXT,
   null_meaning TEXT, null_meaning_status TEXT, null_meaning_ref TEXT, null_count INTEGER,
   valid_min TEXT, valid_max TEXT, scale TEXT, "offset" TEXT, verified_at TEXT, verified_by TEXT, proposal_compatibility TEXT,
-  PRIMARY KEY(layer_dataset_id, version, field));
+  field_role TEXT, verification_auth TEXT, PRIMARY KEY(layer_dataset_id, version, field));
+CREATE TABLE layer_versions(
+  layer_dataset_id TEXT, dataset_version TEXT, content_id TEXT, content_algorithm TEXT, package_dataset_id TEXT,
+  origin_package_version TEXT, registered_at TEXT, same_content_as TEXT, content_source TEXT,
+  PRIMARY KEY(layer_dataset_id, dataset_version));
+CREATE TABLE package_layers(
+  package_dataset_id TEXT, package_version TEXT, layer_name TEXT, layer_dataset_id TEXT, dataset_version TEXT,
+  content_id TEXT, change TEXT, PRIMARY KEY(package_dataset_id, package_version, layer_name));
+CREATE TABLE metadata_conflicts(
+  dataset_id TEXT, version TEXT, kind TEXT, subject TEXT, item TEXT, authoritative_value TEXT, authoritative_source TEXT,
+  other_value TEXT, other_source TEXT, issue TEXT);
 CREATE TABLE field_relations(dataset_id TEXT, version TEXT, from_layer_dataset_id TEXT, from_field TEXT,
   to_layer_dataset_id TEXT, to_field TEXT, kind TEXT, verified INTEGER, evidence TEXT, source_ref TEXT);
 CREATE TABLE layer_profile(layer_dataset_id TEXT, version TEXT, declared_role TEXT, source_ref TEXT,
@@ -345,12 +358,12 @@ def _index_version(con: sqlite3.Connection, folder: Path) -> list[dict[str, Any]
         source = layer.get("source")
         con.execute("INSERT OR IGNORE INTO datasets VALUES (?,?,?,?,?,?)", (lid, "layer", ds, record.get("family"), name, None))
         con.execute(
-            "INSERT INTO layers VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO layers VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (lid, ver, ds, name, layer.get("role"), int(bool(layer.get("published"))), layer.get("geometry_type"),
              layer.get("feature_count"), layer.get("expected_feature_count"), layer.get("crs_name"),
              None if layer.get("crs_matches_package_wkt") is None else int(bool(layer.get("crs_matches_package_wkt"))),
              ext.get("minx"), ext.get("miny"), ext.get("maxx"), ext.get("maxy"), crs.get("native_crs_name") if ext else None,
-             layer.get("null_geometry"), layer.get("empty_geometry"), container_ids.get(source)),
+             layer.get("null_geometry"), layer.get("empty_geometry"), container_ids.get(source), None, None, None),
         )
         con.execute("INSERT INTO relations VALUES (?,?,?,?,?,?)", (lid, "layer_of", f"{ds}@{ver}", ds, ver, f"version.json layers.{name}"))
         if source in container_ids:
@@ -430,6 +443,10 @@ def _index_version(con: sqlite3.Connection, folder: Path) -> list[dict[str, Any]
                     (ds, ver, reg.get("registered_at"), final.get("status"), "registration",
                      f"{final.get('checked_files')} dosya SHA-256 (nihai konum)"))
     pp, pp_rel = semantics.passport(folder, record)
+    for c in semantics.metadata_conflicts(record, pp, pp_rel):
+        con.execute("INSERT INTO metadata_conflicts VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (ds, ver, c["kind"], c["subject"], c["item"], c["authoritative_value"], c["authoritative_source"],
+                     c["other_value"], c["other_source"], c["issue"]))
     for name in record.get("layers", {}):
         role = semantics.passport_layer(pp, name).get("role")
         if role:
@@ -489,32 +506,48 @@ def _index_runs(con: sqlite3.Connection, data_root: Path) -> None:
 SEMANTIC_COLUMNS = ("layer_dataset_id", "version", "dataset_id", "layer_name", "field", "data_type", "source_type", "alias",
                     "meaning", "description", "status", "origin", "source_ref", "unit", "unit_system", "unit_status",
                     "unit_origin", "domain_name", "domain_origin", "null_meaning", "null_meaning_status", "null_meaning_ref",
-                    "null_count", "valid_min", "valid_max", "scale", "offset", "verified_at", "verified_by", "proposal_compatibility")
+                    "null_count", "valid_min", "valid_max", "scale", "offset", "verified_at", "verified_by", "proposal_compatibility",
+                    "field_role", "verification_auth")
 
 
-def _index_semantics(con: sqlite3.Connection, data_root: Path, collected: list[tuple[str, str, str, list[dict[str, Any]]]]) -> None:
-    """Kaynak anlamsal girdileri + kalıcı kullanıcı doğrulamaları + önceki sürümden öneriler (kayıt sırasıyla)."""
-    ordered = [(ds, ver, entries) for _, ver, ds, entries in sorted(collected, key=lambda c: (c[0], c[1]))]
-    resolved = semantics.resolve(ordered, semantics.load_verifications(data_root), layer_dataset_id)
+def _index_semantics(con: sqlite3.Connection, data_root: Path, collected: list[dict[str, Any]],
+                     mapping: dict[tuple[str, str, str], tuple[str, str]]) -> None:
+    """Kaynak anlamsal girdileri + kalıcı kullanıcı doğrulamaları + önceki sürümden öneriler.
+
+    Anlamsal kayıtlar **dataset sürümü** bağlamındadır: yalnız sürümün doğduğu paketteki girdiler
+    kullanılır; değişmeyen katmanın sonraki paketteki kopyası yeni anlamsal kayıt üretmez.
+    """
+    ordered = []
+    for c in sorted(collected, key=lambda c: (c["registered_at"], c["version"])):
+        origin = [e for e in c["entries"] if mapping.get((c["dataset_id"], c["version"], e["layer_name"]), ("", "new"))[1] != "unchanged"]
+        ordered.append((c["dataset_id"], c["version"], origin))
+    content_ids = {(r[0], r[1]): r[2] for r in con.execute("SELECT layer_dataset_id, dataset_version, content_id FROM layer_versions")}
+    entries_log, integrity = semantics.read_log(data_root)
+    con.execute("INSERT INTO meta VALUES ('verification_log', ?)", (json.dumps(integrity),))
+    resolved = semantics.resolve(ordered, entries_log, layer_dataset_id, content_ids)
     placeholders = ",".join("?" * len(SEMANTIC_COLUMNS))
     cols = ",".join(f'"{c}"' for c in SEMANTIC_COLUMNS)
     for e in resolved:
         con.execute(f"INSERT OR REPLACE INTO semantic_fields ({cols}) VALUES ({placeholders})",
                     tuple(None if e.get(c) is None else (str(e[c]) if c in ("valid_min", "valid_max", "scale", "offset") else e[c])
                           for c in SEMANTIC_COLUMNS))
-    # Anlamsal tamlık, kullanıcı doğrulamaları uygulandıktan sonraki duruma göre güncellenir.
-    by_version: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    # Paket sürümünün anlamsal tamlığı: içerdiği her katmanın etkin dataset sürümündeki durum.
+    by_layer: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for e in resolved:
-        by_version.setdefault((e["dataset_id"], e["version"]), []).append(e)
-    for (ds, ver), entries in by_version.items():
+        by_layer.setdefault((e["layer_dataset_id"], e["version"]), []).append(e)
+    for c in collected:
+        entries = []
+        for name in c["facts"] or {e["layer_name"]: None for e in c["entries"]}:
+            dv = mapping.get((c["dataset_id"], c["version"], name), (c["version"], "new"))[0]
+            entries += by_layer.get((layer_dataset_id(c["dataset_id"], name), dv), [])
         state, detail = semantics_completeness(entries)
         con.execute("UPDATE metadata_completeness SET state=?, detail=? WHERE dataset_id=? AND version=? AND item='semantic_definitions'",
-                    (state, detail, ds, ver))
+                    (state, detail, c["dataset_id"], c["version"]))
 
 
 def semantics_completeness(entries: list[dict[str, Any]]) -> tuple[str, str]:
     """Yapısal alanlar (OID, geometri) hariç: anlamı kaynakta beyanlı veya kullanıcıca doğrulanmış alan oranı."""
-    fields = [e for e in entries if e.get("data_type") not in ("OID", "Geometry")]
+    fields = [e for e in entries if e.get("data_type") not in ("OID", "Geometry") and e.get("field_role") != "structural"]
     counts = Counter(e.get("status") for e in fields)
     known = counts[semantics.SOURCE_DECLARED] + counts[semantics.USER_VERIFIED]
     detail = (f"{known}/{len(fields)} alan · kaynak {counts[semantics.SOURCE_DECLARED]} · kullanıcı {counts[semantics.USER_VERIFIED]}"
@@ -522,6 +555,70 @@ def semantics_completeness(entries: list[dict[str, Any]]) -> tuple[str, str]:
     if not fields or known == 0:
         return "missing", detail
     return ("present" if known == len(fields) else "partial"), detail
+
+
+FACTS_CACHE = "_derived/layer_facts.json"
+
+
+def _facts_for(data_root: Path, folder: Path, record: dict[str, Any], cache: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], str]:
+    """Katman içerik kimlikleri: yeni kayıtlarda version.json'da; eski kayıtlarda türetilmiş önbellekte.
+
+    Eski kayıt (ör. HD01 1.0.0-rc1) değiştirilmez: kimlik payload GDB'si salt okunur taranarak bir kez
+    hesaplanır ve ``_derived/layer_facts.json``'a, paket parmak izine bağlı olarak yazılır.
+    """
+    layers = record.get("layers", {}) or {}
+    if layers and all(isinstance(l.get("content"), dict) for l in layers.values()):
+        return {n: l["content"] for n, l in layers.items()}, "version.json"
+    key = folder.relative_to(catalog.data_dir(data_root)).as_posix()
+    fingerprint, _ = _registered_fingerprint(folder, record)
+    cached = cache.get(key)
+    if cached and cached.get("package_fingerprint") == fingerprint and set(cached.get("layers", {})) == set(layers):
+        return cached["layers"], FACTS_CACHE
+    from .vector_inspect import layer_facts
+
+    facts = {}
+    for name, layer in layers.items():
+        source = layer.get("source")
+        if source:
+            facts[name] = layer_facts(folder / "payload" / source, name)
+    cache[key] = {"package_fingerprint": fingerprint, "layers": facts, "computed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    cache["_dirty"] = True
+    return facts, FACTS_CACHE
+
+
+def _index_layer_versions(con: sqlite3.Connection, collected: list[dict[str, Any]]) -> dict[tuple[str, str, str], tuple[str, str]]:
+    """Mantıksal veri seti sürümleri, paket sürümünden bağımsız ve belirlenimci olarak türetilir.
+
+    Kural (her paket veri seti için kayıt sırasıyla, her katmanda): içerik kimliği katmanın son
+    dataset sürümüyle aynıysa o sürüm korunur (``unchanged``); farklıysa paket sürümü etiketiyle yeni
+    dataset sürümü doğar (``new``). Aynı içerik daha eski bir sürümde görülmüşse ``same_content_as``
+    ile belirtilir. Fiziksel dosya çoğaltılmaz; değişmeyen katman yeni pakette de bulunur
+    (``package_layers``), dataset sürümü ilk doğduğu pakete bağlı kalır.
+    """
+    mapping: dict[tuple[str, str, str], tuple[str, str]] = {}
+    latest: dict[str, dict[str, Any]] = {}
+    seen: dict[tuple[str, str], str] = {}
+    for c in sorted(collected, key=lambda c: (c["dataset_id"], c["registered_at"], c["version"])):
+        for name, facts in sorted(c["facts"].items()):
+            lid = layer_dataset_id(c["dataset_id"], name)
+            cid = facts.get("content_id")
+            prev = latest.get(lid)
+            if prev and cid and prev["content_id"] == cid:
+                dv, change = prev["dataset_version"], "unchanged"
+            else:
+                dv = c["version"]
+                change = "new" if prev is None else "changed"
+                con.execute("INSERT INTO layer_versions VALUES (?,?,?,?,?,?,?,?,?)",
+                            (lid, dv, cid, facts.get("algorithm"), c["dataset_id"], c["version"], c["registered_at"],
+                             seen.get((lid, cid)) if cid else None, c["facts_source"]))
+                latest[lid] = {"content_id": cid, "dataset_version": dv}
+                if cid:
+                    seen.setdefault((lid, cid), dv)
+            con.execute("INSERT INTO package_layers VALUES (?,?,?,?,?,?,?)", (c["dataset_id"], c["version"], name, lid, dv, cid, change))
+            con.execute("UPDATE layers SET dataset_version=?, content_id=?, change=? WHERE layer_dataset_id=? AND version=?",
+                        (dv, cid, change, lid, c["version"]))
+            mapping[(c["dataset_id"], c["version"], name)] = (dv, change)
+    return mapping
 
 
 def rebuild_index(data_root: Path) -> Path:
@@ -534,13 +631,20 @@ def rebuild_index(data_root: Path) -> Path:
         with closing(sqlite3.connect(tmp)) as con:
             con.executescript(SCHEMA)
             con.execute("INSERT INTO meta VALUES ('schema_version', ?)", (INDEX_SCHEMA_VERSION,))
+            cache_path = catalog.data_dir(data_root) / FACTS_CACHE
+            cache = _read(cache_path) if cache_path.is_file() else {}
             collected = []
             for folder in _version_dirs(data_root):
                 entries = _index_version(con, folder)
                 if entries is not None:
                     rec = _read(folder / "version.json")
-                    collected.append((rec["registration"].get("registered_at") or "", rec["version"], rec["dataset_id"], entries))
-            _index_semantics(con, data_root, collected)
+                    facts, source = _facts_for(data_root, folder, rec, cache)
+                    collected.append({"registered_at": rec["registration"].get("registered_at") or "", "version": rec["version"],
+                                      "dataset_id": rec["dataset_id"], "entries": entries, "facts": facts, "facts_source": source})
+            if cache.pop("_dirty", False):
+                write_json_atomic(cache_path, cache)
+            mapping = _index_layer_versions(con, collected)
+            _index_semantics(con, data_root, collected, mapping)
             for dataset_file in sorted((catalog.data_dir(data_root) / "datasets").rglob("dataset.json")) if (catalog.data_dir(data_root) / "datasets").is_dir() else []:
                 d = _read(dataset_file)
                 con.execute("UPDATE datasets SET latest_registered=? WHERE dataset_id=?", (d.get("latest_registered"), d.get("dataset_id")))

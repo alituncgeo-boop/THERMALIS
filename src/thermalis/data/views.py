@@ -74,8 +74,10 @@ def _item(data_root: Path, layer: dict[str, Any], dv: dict[str, Any], profile: d
         "minx": layer["extent_minx"], "miny": layer["extent_miny"], "maxx": layer["extent_maxx"], "maxy": layer["extent_maxy"],
         "crs": layer["extent_crs"]}
     return {
-        "id": layer["layer_dataset_id"], "dataset_id": ds, "version": ver,
-        "package_id": dv["package_id"], "package_version": package_version(dv["package_id"]),
+        # "version" = mantıksal dataset sürümü; "package_version" = bu satırın ait olduğu paketin sürümü.
+        "id": layer["layer_dataset_id"], "dataset_id": ds, "version": layer.get("dataset_version") or ver,
+        "package_id": dv["package_id"], "package_version": ver, "content_id": layer.get("content_id"),
+        "version_change": layer.get("change"),
         "package_fingerprint": dv["package_fingerprint"],
         "layer_name": layer["layer_name"], "place": _place(profile),
         "source_title": (meta or {}).get("title"),
@@ -115,20 +117,23 @@ def catalog_items(data_root: Path) -> list[dict[str, Any]]:
                             (d["dataset_id"], latest)):
             meta = _one(_query(data_root, "SELECT * FROM layer_metadata WHERE layer_dataset_id=? AND version=?",
                                (layer["layer_dataset_id"], latest)))
-            items.append(_item(data_root, layer, dv, profile, meta, len(versions)))
+            count = len(_query(data_root, "SELECT 1 FROM layer_versions WHERE layer_dataset_id=?", (layer["layer_dataset_id"],)))
+            items.append(_item(data_root, layer, dv, profile, meta, count))
     return items
 
 
 def dataset_metadata(data_root: Path, layer_id: str, version: str | None = None) -> dict[str, Any] | None:
     """Bir mantıksal veri setinin tam metadata'sı (gerçek kayıtlardan)."""
-    layers = _query(data_root, "SELECT * FROM layers WHERE layer_dataset_id=?", (layer_id,))
-    if not layers:
-        return None
-    layer = next((l for l in layers if l["version"] == version), None) if version else None
-    if layer is None:
-        versions = [v["version"] for v in query_versions(data_root, layers[0]["dataset_id"])]
-        latest = next((v for v in reversed(versions) if any(l["version"] == v for l in layers)), layers[-1]["version"])
-        layer = next(l for l in layers if l["version"] == latest)
+    from .contract import NotFound, _layer
+
+    try:
+        # Dataset sürümü (geriye dönük: paket sürümü de kabul edilir) → sürümün doğduğu paketin katman satırı.
+        layer = _layer(data_root, layer_id, version)
+    except NotFound:
+        try:
+            layer = _layer(data_root, layer_id, None)
+        except NotFound:
+            return None
     ds, ver = layer["dataset_id"], layer["version"]
     found = catalog.read_version(data_root, ds, ver)
     if found is None:
@@ -137,7 +142,9 @@ def dataset_metadata(data_root: Path, layer_id: str, version: str | None = None)
     dv = _one(_query(data_root, "SELECT * FROM dataset_versions WHERE dataset_id=? AND version=?", (ds, ver)))
     profile = _one(_query(data_root, "SELECT * FROM dataset_profile WHERE dataset_id=? AND version=?", (ds, ver)))
     meta = _one(_query(data_root, "SELECT * FROM layer_metadata WHERE layer_dataset_id=? AND version=?", (layer_id, ver)))
-    history = query_versions(data_root, ds)
+    from .contract import list_versions
+
+    history = list_versions(data_root, layer_id)  # mantıksal veri setinin kendi sürümleri (paket sürümlerinden bağımsız)
     item = _item(data_root, layer, dv, profile, meta, len(history))
 
     fields = _query(data_root, "SELECT * FROM fields WHERE layer_dataset_id=? AND version=? ORDER BY rowid", (layer_id, ver))
@@ -160,8 +167,9 @@ def dataset_metadata(data_root: Path, layer_id: str, version: str | None = None)
     integ = _integrity(ds, ver, data_root)
     return {
         "item": item,
-        "identity": {"id": layer_id, "dataset_id": ds, "version": ver, "layer_name": layer["layer_name"],
-                     "package_id": dv["package_id"], "package_version": item["package_version"],
+        "identity": {"id": layer_id, "dataset_id": ds, "version": layer["dataset_version"], "layer_name": layer["layer_name"],
+                     "package_id": dv["package_id"], "package_version": ver, "content_id": layer["content_id"],
+                     "content_source": layer["content_source"],
                      "package_fingerprint": dv["package_fingerprint"], "fingerprint_source": dv["fingerprint_source"],
                      "ingest_id": dv["ingest_id"], "registered_at": dv["registered_at"], "tool": dv["tool"], "gdal": dv["gdal"]},
         "version_history": history,

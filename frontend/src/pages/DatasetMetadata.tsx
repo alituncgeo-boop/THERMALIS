@@ -1,7 +1,7 @@
 import { AlertTriangle, ArrowLeft, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { api, errorKey, type DatasetMetadata, type SemanticField, type SemanticVerification } from "../api";
+import { api, errorKey, type DatasetMetadata, type SemanticDictionary, type SemanticField, type SemanticVerification, type SessionStatus } from "../api";
 import { PageHeader } from "../components/Layout";
 import { RequireProject } from "../components/projects";
 import { AccessBadge, QualityPill, useDataFormat } from "./DataCatalog";
@@ -124,6 +124,7 @@ function VerifyDialog({ field, onClose, onSaved }: { field: SemanticField; onClo
         <label className="field">{t("data.semantic.null_meaning")}<input value={nullMeaning} onChange={(e) => setNullMeaning(e.target.value)} /></label>
         <label className="field">{t("data.semantic.note")}<input value={note} onChange={(e) => setNote(e.target.value)} /></label>
         <label className="field">{t("data.semantic.verified_by")}<input value={by} onChange={(e) => setBy(e.target.value)} /></label>
+        <p className="cell-muted small-gap">{t("data.semantic.declared_note")}</p>
         {error && <p className="form-error">{t(error)}</p>}
         <div className="dialog-actions">
           <button type="button" className="ghost-button" onClick={onClose}>{t("common.cancel")}</button>
@@ -137,19 +138,59 @@ function VerifyDialog({ field, onClose, onSaved }: { field: SemanticField; onClo
 function SemanticSection({ datasetId, version }: { datasetId: string; version: string }) {
   const f = useDataFormat();
   const { t } = f;
-  const [fields, setFields] = useState<SemanticField[] | null>(null);
+  const [dictionary, setDictionary] = useState<SemanticDictionary | null>(null);
+  const [session, setSession] = useState<SessionStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<SemanticField | null>(null);
   const load = useCallback(() => {
-    api.semantics(datasetId, version).then((r) => setFields(r.fields)).catch((err) => setError(errorKey(err)));
+    api.semantics(datasetId, version).then(setDictionary).catch((err) => setError(errorKey(err)));
+    api.session().then(setSession).catch(() => setSession(null));
   }, [datasetId, version]);
   useEffect(load, [load]);
+  const fields = dictionary?.fields ?? null;
+  const log = dictionary?.verification_log ?? null;
+  const conflicts = dictionary?.conflicts ?? [];
+  const canVerify = Boolean(session?.verification_allowed) && log?.status !== "broken";
   const counts = (fields ?? []).reduce<Record<string, number>>((acc, x) => ({ ...acc, [x.status]: (acc[x.status] ?? 0) + 1 }), {});
 
   return (
     <Section title={t("data.semantic.title", { count: fields?.length ?? 0 })}>
       <p className="muted small-gap">{t("data.semantic.note_status")}</p>
       {error && <p className="form-error">{t(error)}</p>}
+      {dictionary?.content_id && (
+        <p className="cell-muted small-gap">{t("data.semantic.content_id")}: <span className="mono break">{dictionary.content_id}</span></p>
+      )}
+      {log?.status === "broken" && (
+        <p className="notice-warn"><AlertTriangle size={14} aria-hidden /> {t("data.semantic.log_broken", { line: log.broken_at_line ?? "—", reason: log.reason ?? "—" })}</p>
+      )}
+      {session && !session.verification_allowed && <p className="muted small-gap">{t("data.semantic.verify_locked")}</p>}
+      {conflicts.length > 0 && (
+        <>
+          <p className="notice-warn"><AlertTriangle size={14} aria-hidden /> {t("data.semantic.conflicts_note", { count: conflicts.length })}</p>
+          <div className="table-scroll">
+            <table className="data-table compact">
+              <thead>
+                <tr>
+                  <th>{t("data.semantic.conflict.subject")}</th>
+                  <th>{t("data.semantic.conflict.authoritative")}</th>
+                  <th>{t("data.semantic.conflict.other")}</th>
+                  <th>{t("data.semantic.conflict.issue")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {conflicts.map((c, i) => (
+                  <tr key={`${c.kind}-${c.subject}-${c.item}-${i}`}>
+                    <td className="mono small-cell">{c.subject ?? "—"} · {c.item ?? "—"}</td>
+                    <td className="small-cell">{c.authoritative_value ?? "—"}{c.authoritative_source && <div className="cell-muted mono">{c.authoritative_source}</div>}</td>
+                    <td className="small-cell">{c.other_value ?? "—"}{c.other_source && <div className="cell-muted mono break">{c.other_source}</div>}</td>
+                    <td className="small-cell">{t(`data.semantic.issue.${c.issue}`, { defaultValue: c.issue })}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
       {fields && (
         <>
           <div className="chip-row">
@@ -179,15 +220,22 @@ function SemanticSection({ datasetId, version }: { datasetId: string; version: s
                     <td className="small-cell" title={x.source_ref ?? undefined}>
                       {x.meaning ?? <span className="cell-muted">{t("data.value.unknown")}</span>}
                       {x.proposal_compatibility && <div className="cell-muted">{t(`data.semantic.compat.${x.proposal_compatibility}`, { defaultValue: x.proposal_compatibility })}</div>}
-                      {x.verified_at && <div className="cell-muted">{t("data.semantic.verified_line", { by: x.verified_by ?? "—", at: f.date(x.verified_at) })}</div>}
+                      {x.verified_at && (
+                        <div className="cell-muted">
+                          {t("data.semantic.verified_line", { by: x.verified_by ?? "—", at: f.date(x.verified_at) })}
+                          {" · "}{t(`data.semantic.auth.${x.verification_auth ?? "unknown"}`, { defaultValue: x.verification_auth ?? "—" })}
+                        </div>
+                      )}
+                      {x.field_role === "structural" && <div className="cell-muted">{t("data.semantic.structural")}</div>}
                     </td>
                     <td><SemanticStatus status={x.status} /></td>
                     <td className="small-cell">{x.unit ? <>{x.unit} <SemanticStatus status={x.unit_status} /></> : <span className="cell-muted">—</span>}</td>
                     <td className="mono small-cell">{x.domain_name ?? "—"}</td>
                     <td className="small-cell">{x.null_meaning ? (x.null_meaning.startsWith("DOCUMENTED_SPECIAL_RECORDS:")
                       ? t("data.semantic.special_records", { count: Number(x.null_meaning.split(":")[1]) }) : x.null_meaning) : <span className="cell-muted">—</span>}</td>
-                    <td>{x.data_type !== "OID" && x.data_type !== "Geometry" && (
-                      <button type="button" className="ghost-button small-button" onClick={() => setEditing(x)}>{t("data.semantic.verify")}</button>
+                    <td>{x.field_role !== "structural" && x.data_type !== "OID" && x.data_type !== "Geometry" && (
+                      <button type="button" className="ghost-button small-button" disabled={!canVerify}
+                        title={canVerify ? undefined : t("data.semantic.verify_locked")} onClick={() => setEditing(x)}>{t("data.semantic.verify")}</button>
                     )}</td>
                   </tr>
                 ))}
@@ -261,6 +309,8 @@ export function DatasetMetadataPage() {
             [t("data.meta.parent_dataset"), <span className="mono">{v(identity.dataset_id)}</span>],
             [t("data.detail.dataset_version"), <span className="mono">{v(identity.version)}</span>],
             [t("data.detail.package_version"), <span className="mono">{v(identity.package_version, f.unknown)}</span>],
+            [t("data.meta.content_id"), <span className="mono break">{v(identity.content_id, f.unknown)}</span>],
+            [t("data.meta.content_source"), v(identity.content_source, f.unknown)],
             [t("data.meta.package_id"), <span className="mono">{v(identity.package_id)}</span>],
             [t("data.meta.fingerprint"), <span className="mono break">{v(identity.package_fingerprint, f.unknown)}</span>],
             [t("data.meta.ingest_id"), <span className="mono">{v(identity.ingest_id)}</span>],
@@ -268,10 +318,21 @@ export function DatasetMetadataPage() {
             [t("data.meta.tool"), `${v(identity.tool)} · GDAL ${v(identity.gdal, f.unknown)}`],
           ]} />
           <h3 className="sub-title">{t("data.meta.version_history")}</h3>
-          <Table columns={[{ key: "version", label: t("data.col.version"), mono: true }, { key: "quality_status", label: t("data.col.quality") },
-            { key: "package_id", label: t("data.meta.package_id"), mono: true }, { key: "registered_at", label: t("data.col.registered") }]}
+          <p className="cell-muted small-gap">{t("data.meta.version_model_note")}</p>
+          <Table columns={[{ key: "dataset_version", label: t("data.detail.dataset_version"), mono: true },
+            { key: "origin_package_version", label: t("data.meta.origin_package"), mono: true },
+            { key: "present_in_packages", label: t("data.meta.present_in_packages"), mono: true },
+            { key: "quality_status", label: t("data.col.quality") }, { key: "registered_at", label: t("data.col.registered") }]}
             rows={meta.version_history}
-            render={(key, row) => (key === "quality_status" ? <QualityPill status={String(row.quality_status)} /> : key === "registered_at" ? f.date(row.registered_at as string) : undefined)} />
+            render={(key, row) => {
+              if (key === "quality_status") return <QualityPill status={String(row.quality_status)} />;
+              if (key === "registered_at") return f.date(row.registered_at as string);
+              if (key === "present_in_packages") {
+                const present = (row.present_in_packages as unknown as { package_version: string; change: string }[] | null) ?? [];
+                return present.map((p) => `${p.package_version} (${t(`data.meta.change.${p.change}`, { defaultValue: p.change })})`).join(", ");
+              }
+              return undefined;
+            }} />
         </Section>
 
         <Section title={t("data.meta.source")}>

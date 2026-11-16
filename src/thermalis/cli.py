@@ -42,8 +42,14 @@ def _start(args: argparse.Namespace) -> int:
 
     url = f"http://{HOST}:{args.port}"
     print(f"THERMALIS çalışıyor / running: {url}  (durdurmak / stop: Ctrl+C)")
+    # Anlamsal doğrulama yetkili arayüz oturumu gerektirir; tek kullanımlık kod yalnız bu süreçte geçerlidir.
+    from .app import issue_ui_code
+
+    session_url = f"{url}/#auth={issue_ui_code()}"
+    if args.no_browser or args.reload:
+        print(f"Doğrulama yetkili oturum / authorized session (tek kullanımlık / one-time): {session_url}")
     if not args.no_browser:
-        threading.Timer(1.2, lambda: webbrowser.open(url)).start()
+        threading.Timer(1.2, lambda: webbrowser.open(session_url)).start()
 
     os.environ["THERMALIS_UI_DIR"] = str(static)
     uvicorn.run(

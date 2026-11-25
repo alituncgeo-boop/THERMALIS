@@ -289,6 +289,31 @@ def _record_ids(gdb: str, layer: str, fids: tuple[int, ...], fields: tuple[str, 
     return read_records(Path(gdb), layer, list(fids), list(fields))
 
 
+def stored_identifiers(folder: Path, layer_dataset_id: str) -> dict[int, dict[str, Any]]:
+    """``quality_identifiers.json``: {katman kimliği: {OBJECTID: {GLOBALID: ...}}} (yoksa boş: bilinmiyor)."""
+    from .catalog_index import SUPPLEMENTARY_IDENTIFIERS
+
+    path = folder / SUPPLEMENTARY_IDENTIFIERS
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {int(oid): values for oid, values in (data.get("layers", {}).get(layer_dataset_id) or {}).items()}
+
+
+def quality_identifiers(data_root: Path, dataset_id: str, version: str) -> dict[str, Any]:
+    """Bir paket sürümündeki tüm katmanların özel kayıt kimlikleri (yerel GDB'den okunur; taşıma ek kaydı için)."""
+    out: dict[str, dict[str, dict[str, Any]]] = {}
+    for layer in _query(data_root, "SELECT layer_dataset_id FROM layers WHERE dataset_id=? AND version=?", (dataset_id, version)):
+        lid = layer["layer_dataset_id"]
+        q = quality(data_root, lid, version)
+        fields = [k for k in ("globalid", "tanitimkodu") if any(k in s for s in q["special_records"])]
+        values = {str(s["objectid"]): {k.upper(): s.get(k) for k in fields} for s in q["special_records"] if fields}
+        if values:
+            out[lid] = values
+    return {"schema": "thermalis.quality-identifiers/1", "dataset_id": dataset_id, "version": version, "layers": out}
+
+
 def quality(data_root: Path, dataset_id: str, version: str | None = None) -> dict[str, Any]:
     layer = _layer(data_root, dataset_id, version)
     ds, ver = layer["dataset_id"], layer["version"]
@@ -301,10 +326,14 @@ def quality(data_root: Path, dataset_id: str, version: str | None = None) -> dic
     wanted = tuple(f for f in ("GLOBALID", "TANITIMKODU") if f in schema)
     asset, folder = _physical(data_root, layer)
     if special and wanted and asset:
-        try:  # salt okunur GDAL okuması; hata olursa kimlikler bilinmiyor kalır
-            ids = _record_ids(str(folder / "payload" / asset["path"]), layer["layer_name"], tuple(sorted(f["oid_a"] for f in special)), wanted)
-        except Exception:
-            ids = {}
+        gdb = folder / "payload" / asset["path"]
+        if gdb.exists():
+            try:  # salt okunur GDAL okuması; hata olursa kimlikler bilinmiyor kalır
+                ids = _record_ids(str(gdb), layer["layer_name"], tuple(sorted(f["oid_a"] for f in special)), wanted)
+            except Exception:
+                ids = {}
+        else:
+            ids = stored_identifiers(folder, dataset_id)  # bulut kaydı: yayınla saklanan doğrulanmış kimlikler
     gates = _query(data_root, "SELECT gate_id, status, detail, source_file FROM quality_gates WHERE dataset_id=? AND version=?", (ds, ver))
     dv = _one(_query(data_root, "SELECT quality_status FROM dataset_versions WHERE dataset_id=? AND version=?", (ds, ver)))
     return {
@@ -351,7 +380,9 @@ def access(data_root: Path, dataset_id: str, version: str | None = None, *, auth
             "reader": READERS.get((asset or {}).get("format")), "relative_path": f"payload/{asset['path']}" if asset else None,
             # Bulut sürümünde yerel yol yoktur (uydurulmaz): erişim ``storage`` bloğundadır.
             "absolute_path": str(folder / "payload" / asset["path"]) if (asset and allowed and local) else None,
-            "storage": storage, "read_only": True, "conditions": conditions, "usage_note": USAGE_NOTE}
+            "storage": storage, "read_only": True, "conditions": conditions, "usage_note": USAGE_NOTE,
+            # Bulut sürümünü yerelde okumak için: doğrulanmış önbellek kopyası (yalnız istenen varlık indirilir).
+            "materialize": {"endpoint": "/api/data/v1/materialize", "method": "POST"} if (allowed and not local) else None}
 
 
 # --------------------------------------------------------------------------- sürüm farkları

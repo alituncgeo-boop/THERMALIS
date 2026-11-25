@@ -31,7 +31,11 @@ def _square(x: float, y: float, size: float = 100.0):
     return ogr.CreateGeometryFromWkt(f"POLYGON(({x} {y},{x + size} {y},{x + size} {y + size},{x} {y + size},{x} {y}))")
 
 
-def build_gdb(path: Path, extra_field: str | None = None) -> None:
+def synthetic_globalid(i: int) -> str:
+    return "{%08d-0000-4000-8000-%012d}" % (i + 1, i + 1)
+
+
+def build_gdb(path: Path, extra_field: str | None = None, globalid: bool = False) -> None:
     from osgeo import gdal, ogr, osr
 
     gdal.UseExceptions()
@@ -68,9 +72,15 @@ def build_gdb(path: Path, extra_field: str | None = None) -> None:
     hoods.CreateField(ad)
     if extra_field:
         hoods.CreateField(ogr.FieldDefn(extra_field, ogr.OFTReal))
+    if globalid:
+        gid = ogr.FieldDefn("GLOBALID", ogr.OFTString)
+        gid.SetWidth(38)
+        hoods.CreateField(gid)
     rows = [(1421, 1, 40001, "FİKİRTEPE"), (1421, 1, 40002, "HASANPAŞA"), (1103, 1, None, "ORMAN")]
     for i, (district, side, ident, label) in enumerate(rows):
         f = ogr.Feature(hoods.GetLayerDefn())
+        if globalid:
+            f.SetField("GLOBALID", synthetic_globalid(i))
         f.SetField("ILCEKN", district)
         f.SetField("YAKA", side)
         if ident is not None:
@@ -112,12 +122,12 @@ def build_package(root: Path, *, counts: dict[str, int] | None = None, null_oids
                   version: str = "1.0.0-rc1", release_overrides: dict | None = None,
                   extra_register_rows: list[list] | None = None, passport: dict | None = None,
                   layer_metadata: dict[str, dict] | None = None, extra_field: str | None = None,
-                  dataset_id: str = DEFAULT_DATASET_ID, package_id: str = DEFAULT_PACKAGE_ID) -> Path:
+                  dataset_id: str = DEFAULT_DATASET_ID, package_id: str = DEFAULT_PACKAGE_ID, globalid: bool = False) -> Path:
     pkg = root / "PACKAGE"
     (pkg / "QA").mkdir(parents=True)
     src = root / "01_ADMIN" / "SOURCE"
     (src / "Admin.metadata" / "EVIDENCE").mkdir(parents=True)
-    build_gdb(src / "Admin.gdb", extra_field)
+    build_gdb(src / "Admin.gdb", extra_field, globalid)
 
     counts = counts or {"Districts": 2, "Neighborhoods": 3, "Aux_Boundary": 1}
     release = {
@@ -151,6 +161,7 @@ def build_package(root: Path, *, counts: dict[str, int] | None = None, null_oids
         ("Neighborhoods", "ILCEKN", "Integer", "Ilce_UAVT"), ("Neighborhoods", "YAKA", "SmallInteger", "YAKA"),
         ("Neighborhoods", "KIMLIKNO", "Integer", ""), ("Neighborhoods", "AD", "String", ""),
         *([("Neighborhoods", extra_field, "Double", "")] if extra_field else []),
+        *([("Neighborhoods", "GLOBALID", "String", "")] if globalid else []),
         ("Neighborhoods", "Shape_Length", "Double", ""), ("Neighborhoods", "Shape_Area", "Double", ""),
         ("Aux_Boundary", "OBJECTID", "OID", ""), ("Aux_Boundary", "Shape", "Geometry", ""),
         ("Aux_Boundary", "Shape_Length", "Double", ""), ("Aux_Boundary", "Shape_Area", "Double", ""),
@@ -178,6 +189,29 @@ def build_package(root: Path, *, counts: dict[str, int] | None = None, null_oids
     write_manifest(root, package_id)
     (pkg / "SHA256SUMS.csv").write_text("relative_path,bytes,sha256\n", encoding="utf-8")
     return root
+
+
+def make_legacy_record(data_root: Path, dataset_id: str, version: str) -> None:
+    """YALNIZ SENTETİK geçici kayıtlar için: kaydı HD01 gibi eski biçime çevirir (taşıma provası).
+
+    ``version.json``'dan katman içerik kimlikleri ve paket parmak izi çıkarılır, kayıt dosyaları yazılabilir bırakılır.
+    Gerçek kayıtlarda kullanılmaz (değişmez kayıtlara asla yazılmaz).
+    """
+    import os
+    import stat
+
+    from ..data import catalog
+
+    folder = catalog.version_dir(data_root, dataset_id, version)
+    path = folder / "version.json"
+    os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    for layer in record.get("layers", {}).values():
+        layer.pop("content", None)
+    record.get("source", {}).pop("package_fingerprint", None)
+    path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    for name in ("quality.json", "integrity.json"):
+        os.chmod(folder / name, stat.S_IREAD | stat.S_IWRITE)
 
 
 def write_ready_marker(root: Path, sha: str | None = None) -> None:

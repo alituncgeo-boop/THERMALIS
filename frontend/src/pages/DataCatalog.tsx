@@ -361,6 +361,9 @@ function DetailPanel({ item, onVerified }: { item: CatalogItem; onVerified: () =
             {item.storage?.backend === "r2" && (
               <div className="cell-muted">{t("data.storage.committed_line", { at: f.date(item.storage.committed_at), size: formatBytes(item.storage.total_bytes, f.locale) ?? f.unknown })}</div>
             )}
+            {item.storage?.cloud_copy?.same_fingerprint && (
+              <div className="cell-muted"><Cloud size={11} aria-hidden /> {t("data.storage.cloud_copy_line", { at: f.date(item.storage.cloud_copy.committed_at) })}</div>
+            )}
           </Fact>
         </Group>
 

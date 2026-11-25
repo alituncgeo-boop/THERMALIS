@@ -116,6 +116,9 @@ sürümün `records/THERMALIS_AUTHORIZATION.json` dosyası olarak saklanır.
 
 ## 6. Faz 05 — HD01 taşıma prosedürü (BU FAZDA YAPILMADI)
 
+> Güncel ve uygulanabilir prosedür: [release-migration.md](release-migration.md) (`storage migrate-release`, `compare-release`).
+> Aşağıdaki özet tarihsel bağlam içindir.
+
 Kaynak: `C:\THERMALIS_TRANSFER\INCOMING\HD01_ADMIN_BOUNDARIES_v1.0.0-rc1` (RESTRICTED, QA_CONDITIONAL, MANIFEST SHA-256
 `12162d6363bc0055d9e95a3e73af13bdd4119a4a0442e53643b4234ced22405b`). Faz 04'te yalnız salt okunur kuru çalıştırma yapıldı.
 

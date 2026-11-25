@@ -62,6 +62,8 @@ export interface StorageLocation {
   committed_at: string | null;
   total_bytes: number | null;
   synced_at: string | null;
+  /** Geçiş döneminde yerel kaydın doğrulanmış bulut kopyası (katalog yerel kaydı kullanmaya devam eder). */
+  cloud_copy?: { bucket: string | null; committed_at: string | null; same_fingerprint: boolean } | null;
 }
 
 export interface StorageStatus {
@@ -351,6 +353,9 @@ const KNOWN_ERRORS = new Set([
   "verification_log_busy",
   "session_code_invalid",
   "cloud_unavailable",
+  "physical_access_not_authorized",
+  "cache_capacity_exceeded",
+  "insufficient_disk_space",
   "validation",
   "network",
 ]);

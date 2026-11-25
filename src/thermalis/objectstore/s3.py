@@ -330,7 +330,8 @@ class S3Backend(ObjectStore):
         return -(-part // MIB) * MIB
 
     def upload_file(self, key: str, path: Path, *, expected_sha256: str, operation_id: str,
-                    metadata: dict[str, str] | None = None, cancel: CancelToken | None = None) -> ObjectInfo:
+                    metadata: dict[str, str] | None = None, cancel: CancelToken | None = None,
+                    progress: Callable[[int], None] | None = None, source_verified: bool = False) -> ObjectInfo:
         validate_key(key)
         validate_operation_id(operation_id)
         cancel = cancel or NEVER_CANCELLED
@@ -339,18 +340,26 @@ class S3Backend(ObjectStore):
         if not is_sha256_hex(expected_sha256):
             raise ChecksumMismatch("expected_sha256_invalid", key=key)
         st = path.stat()
-        actual, size = sha256_path(path, cancel)  # yüklemeden ÖNCE tam dosya SHA-256
-        if actual != expected_sha256 or size != st.st_size:
-            raise ChecksumMismatch("source_sha256_mismatch", key=key)
+        size = st.st_size
+        if not source_verified:
+            actual, size = sha256_path(path, cancel)  # yüklemeden ÖNCE tam dosya SHA-256
+            if actual != expected_sha256 or size != st.st_size:
+                raise ChecksumMismatch("source_sha256_mismatch", key=key)
         if size <= self.multipart_threshold:
-            return self._conditional_put(key, lambda: path.open("rb"), size, expected_sha256, create_only=True, if_match=None,
+            info = self._conditional_put(key, lambda: path.open("rb"), size, expected_sha256, create_only=True, if_match=None,
                                          operation_id=operation_id, metadata=meta, cancel=cancel)
+            after = path.stat()
+            if (after.st_size, after.st_mtime_ns) != (st.st_size, st.st_mtime_ns):
+                raise UploadStateInvalid("source_changed_during_upload", key=key)
+            if progress is not None:
+                progress(size)
+            return info
         if self.state_store is None:
             raise CapabilityNotSupported("multipart_requires_state_store", key=key)
-        return self._multipart(key, path, st, expected_sha256, operation_id, meta, cancel)
+        return self._multipart(key, path, st, expected_sha256, operation_id, meta, cancel, progress)
 
     def _multipart(self, key: str, path: Path, st, sha256: str, operation_id: str, metadata: dict[str, str],
-                   cancel: CancelToken) -> ObjectInfo:
+                   cancel: CancelToken, progress: Callable[[int], None] | None = None) -> ObjectInfo:
         assert self.state_store is not None
         state = self.state_store.load(operation_id)
         if state is None:
@@ -378,10 +387,12 @@ class S3Backend(ObjectStore):
                     return done
                 state.upload_id, state.parts = None, {}
                 self.state_store.save(state)
-                return self._multipart(key, path, st, sha256, operation_id, metadata, cancel)
+                return self._multipart(key, path, st, sha256, operation_id, metadata, cancel, progress)
             # Sunucunun bildiği parçalar esas alınır; yerel kayıtta olup sunucuda olmayan parça yeniden yüklenir.
             state.parts = {n: p for n, p in server.items() if p["size"] == state.part_bounds(int(n))[1]}
             self.state_store.save(state)
+            if progress is not None and state.parts:
+                progress(sum(p["size"] for p in state.parts.values()))  # sürdürme: sunucuda zaten olan baytlar
 
         with path.open("rb") as handle:
             for number in range(1, state.part_count + 1):
@@ -397,6 +408,8 @@ class S3Backend(ObjectStore):
                                   PartNumber=number, Body=data, ContentLength=length)
                 state.parts[str(number)] = {"etag": _clean_etag(resp.get("ETag")), "size": length}
                 self.state_store.save(state)
+                if progress is not None:
+                    progress(length)
         if path.stat().st_mtime_ns != state.source_mtime_ns or path.stat().st_size != state.source_size:
             raise UploadStateInvalid("source_changed_during_upload", key=key)
         info = self._complete(key, state, cancel)

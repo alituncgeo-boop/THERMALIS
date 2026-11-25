@@ -254,6 +254,8 @@ def _storage_configure_cloud(args: argparse.Namespace) -> int:
         return 1
     settings.cloud.endpoint = endpoint
     settings.cloud.bucket = args.bucket
+    if args.intake_bucket is not None:
+        settings.cloud.intake_bucket = args.intake_bucket or None
     settings.cloud.credential_profile = args.profile
     type(settings.cloud).model_validate(settings.cloud.model_dump())
     save_settings(settings)
@@ -307,6 +309,67 @@ def _storage_smoke_test(args: argparse.Namespace) -> int:
     ok = all(s.status == "PASS" for s in steps)
     print("SONUÇ / RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 2
+
+
+def _storage_intake_e2e(args: argparse.Namespace) -> int:
+    from .cloud.e2e import run_e2e
+    from .objectstore.errors import StorageError
+    from .objectstore.factory import cloud_store
+    from .objectstore.smoke import LIVE_ENV
+    from .settings import load_settings
+
+    if not args.confirm_live or os.environ.get(LIVE_ENV) != "1":
+        print(f"Canlı test kapalı / live test disabled: hem --confirm-live hem {LIVE_ENV}=1 gerekir.", file=sys.stderr)
+        return 1
+    settings = load_settings()
+    try:
+        store = cloud_store(settings, args.role)
+        steps = run_e2e(store, provider=settings.cloud.provider, bucket=settings.cloud.bucket or "")
+    except StorageError as exc:
+        print(f"Başlatılamadı / could not start: {exc.code} {exc.detail}", file=sys.stderr)
+        return 1
+    for s in steps:
+        print(f"  [{s.status}] {s.name} — {s.detail}")
+    ok = all(s.status in ("PASS", "INFO") for s in steps)
+    print("SONUÇ / RESULT:", "PASS" if ok else "FAIL")
+    return 0 if ok else 2
+
+
+def _storage_cloud_scan(args: argparse.Namespace) -> int:
+    """Bulut kabulünü bir kez elle çalıştırır (uygulama kapalıyken de). Ayarlarda bulut kabulü açık olmalı."""
+    from .cloud.intake import cloud_intake_from_settings
+    from .objectstore.errors import StorageError
+    from .settings import effective_data_root, load_settings
+
+    settings = load_settings()
+    if not settings.cloud_intake.enabled:
+        print("Bulut kabulü kapalı / cloud intake disabled (settings.cloud_intake.enabled)", file=sys.stderr)
+        return 1
+    try:
+        result = cloud_intake_from_settings(settings, effective_data_root(settings)).scan()
+    except StorageError as exc:
+        print(f"Başarısız / failed: {exc.code} {exc.detail}", file=sys.stderr)
+        return 3
+    print(f"Tarama / scan: {result.status} · duyuru {result.discovered}" + (f" · hata {result.error}" if result.error else ""))
+    for o in result.outcomes:
+        print(f"  [{o.status}] {o.package_id} {o.dataset_id or ''} {o.version or ''} {o.code}")
+    if result.sync:
+        print(f"Katalog / catalog: {result.sync['status']} · yansıtılan {len(result.sync['mirrored'])} · değişmeyen {result.sync['unchanged']}")
+    return 0 if result.status in ("ok", "busy") else 3
+
+
+def _storage_cloud_intake_toggle(args: argparse.Namespace) -> int:
+    from .settings import load_settings, save_settings
+
+    settings = load_settings()
+    settings.cloud_intake.enabled = args.state == "on"
+    if args.interval is not None:
+        settings.cloud_intake.interval_seconds = args.interval
+    type(settings.cloud_intake).model_validate(settings.cloud_intake.model_dump())
+    save_settings(settings)
+    print(f"Bulut kabulü / cloud intake: {args.state} · aralık {settings.cloud_intake.interval_seconds} s · "
+          f"etkin depo / active backend: {settings.storage_backend} (değişmedi)")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -364,6 +427,7 @@ def main(argv: list[str] | None = None) -> int:
     cc = storage_sub.add_parser("configure-cloud", help="R2 uç noktası ve kovası (gizli değer değil); etkin depo değişmez")
     cc.add_argument("--endpoint", required=True, help="https://<hesap>.r2.cloudflarestorage.com")
     cc.add_argument("--bucket", required=True)
+    cc.add_argument("--intake-bucket", default=None, help="İsteğe bağlı ayrı kabul kovası (ikinci bilgisayarın yazdığı)")
     cc.add_argument("--profile", default="default")
     cc.set_defaults(func=_storage_configure_cloud)
     cr = storage_sub.add_parser("credentials", help="Kimlik bilgisini OS kimlik deposuna yaz / sil (değerler yankısız sorulur)")
@@ -376,6 +440,16 @@ def main(argv: list[str] | None = None) -> int:
     sm.add_argument("--role", default="publisher", choices=["uploader", "publisher"])
     sm.add_argument("--confirm-live", action="store_true")
     sm.set_defaults(func=_storage_smoke_test)
+    e2e = storage_sub.add_parser("intake-e2e", help="CANLI uçtan uca bulut kabul testi (sentetik; yalıtılmış ad alanı)")
+    e2e.add_argument("--role", default="publisher", choices=["uploader", "publisher"])
+    e2e.add_argument("--confirm-live", action="store_true")
+    e2e.set_defaults(func=_storage_intake_e2e)
+    cs = storage_sub.add_parser("cloud-scan", help="Bulut kabulünü bir kez çalıştır ve kataloğu eşitle")
+    cs.set_defaults(func=_storage_cloud_scan)
+    ci = storage_sub.add_parser("cloud-intake", help="Bulut kabulünü aç/kapat (etkin depo DEĞİŞMEZ: local kalır)")
+    ci.add_argument("state", choices=["on", "off"])
+    ci.add_argument("--interval", type=int, default=None, help="Tarama aralığı (saniye, en az 60)")
+    ci.set_defaults(func=_storage_cloud_intake_toggle)
 
     args = parser.parse_args(argv)
     return args.func(args)

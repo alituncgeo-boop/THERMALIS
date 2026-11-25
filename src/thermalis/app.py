@@ -370,13 +370,80 @@ def create_app(static_dir: Path | None = None, *, watch: bool | None = None) -> 
         from .data.catalog_index import rebuild_index
         from .data.register import verify_registered
 
-        root = effective_data_root(load_settings())
+        settings = load_settings()
+        root = effective_data_root(settings)
+        from .data.catalog_index import storage_location
+        from .objectstore.errors import StorageError
+
         try:
-            checks = verify_registered(root, payload.dataset_id, payload.version)
+            loc = storage_location(root, payload.dataset_id, payload.version)
+            if loc and loc["backend"] == "r2":
+                from .cloud.catalog_sync import verify_cloud_version
+                from .objectstore.factory import cloud_store
+                from .objectstore.prefixed import namespaced
+
+                store = namespaced(cloud_store(settings, "publisher"), settings.cloud.namespace)
+                checks = verify_cloud_version(store, root, payload.dataset_id, payload.version)
+            else:
+                checks = verify_registered(root, payload.dataset_id, payload.version)
         except (ValueError, FileNotFoundError) as exc:
             raise _error(404, "dataset_not_found") from exc
+        except StorageError as exc:
+            raise _error(503, "cloud_unavailable") from exc
         rebuild_index(root)
         return {"status": "PASS" if all(c.status == "PASS" for c in checks) else "FAIL", "checks": [c.as_dict() for c in checks]}
+
+    # ---- Depolama durumu (bulut + önbellek). Gizli değer, uç nokta veya hesap kimliği döndürülmez. ------
+    @app.get("/api/data/storage")
+    def data_storage() -> dict:
+        from .cloud.catalog_sync import load_sync_state
+        from .data.catalog_index import _query, index_path
+        from .objectstore.credentials import credential_status
+        from .objectstore.errors import StorageError
+        from .objectstore.factory import object_cache, staging_root
+
+        settings = load_settings()
+        root = effective_data_root(settings)
+        cloud = settings.cloud
+        try:
+            creds = credential_status(cloud.credential_profile)
+        except StorageError:
+            creds = {"uploader": None, "publisher": None}
+        cache_info: dict = {"max_bytes": settings.cache.max_bytes}
+        try:
+            cache = object_cache(settings)
+            cache_info.update(usage_bytes=cache.usage(), status="ok")
+        except StorageError as exc:
+            cache_info.update(usage_bytes=None, status=exc.code)
+        staging = staging_root(settings)
+        staging_used = sum(p.stat().st_size for p in staging.rglob("*") if p.is_file()) if staging.is_dir() else 0
+        sync = load_sync_state(root)
+        counts = {"local": 0, "r2": 0}
+        if index_path(root).is_file():
+            for r in _query(root, "SELECT backend, COUNT(*) AS n FROM storage_locations GROUP BY backend"):
+                counts[r["backend"]] = r["n"]
+        watcher_state = watcher.as_dict().get("cloud", {})
+        return {
+            "active_backend": settings.storage_backend,
+            "cloud": {"provider": cloud.provider, "configured": bool(cloud.endpoint and cloud.bucket), "bucket": cloud.bucket,
+                      "intake_bucket": cloud.intake_bucket, "separate_intake_bucket": bool(cloud.intake_bucket),
+                      "credentials": creds, "intake_enabled": settings.cloud_intake.enabled,
+                      "connection": watcher_state.get("last_result"), "last_scan_finished": watcher_state.get("last_scan_finished"),
+                      "last_error": watcher_state.get("last_error"), "interval_seconds": settings.cloud_intake.interval_seconds},
+            "catalog": {"cloud_release_count": counts["r2"], "local_release_count": counts["local"],
+                        "committed_bytes": sync.get("committed_bytes"), "committed_bytes_source": "catalog_derived",
+                        "last_sync_success_at": sync.get("last_success_at"), "last_sync_result": sync.get("last_result"),
+                        "last_sync_problems": (sync.get("problems") or [])[-5:]},
+            "cache": cache_info,
+            "staging": {"usage_bytes": staging_used, "max_bytes": settings.cloud_intake.staging_max_bytes},
+            "billing_note": "provider_billing_not_queried",
+        }
+
+    @app.post("/api/data/storage/sync")
+    def data_storage_sync() -> dict:
+        """Bulut taraması + katalog eşitlemesini hemen başlatır (yıkıcı değil; yalnız okuma ve doğrulanmış yayın)."""
+        watcher.trigger(cloud=True)
+        return {"triggered": True}
 
     # ---- Bilimsel veri erişim sözleşmesi (v1) -----------------------------------------------------
     # Diğer THERMALIS bileşenleri için kararlı, sürümlü uçlar. İş mantığı data/contract.py'dedir.

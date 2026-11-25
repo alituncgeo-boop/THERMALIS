@@ -98,7 +98,16 @@ def _item(data_root: Path, layer: dict[str, Any], dv: dict[str, Any], profile: d
         "summary": (meta or {}).get("summary"), "description": (meta or {}).get("description"),
         "record_issue_count": len(query_record_issues(data_root, ds, ver)),
         "version_count": version_count,
+        "storage": _storage_summary(data_root, ds, ver),
     }
+
+
+def _storage_summary(data_root: Path, ds: str, ver: str) -> dict[str, Any]:
+    from .catalog_index import storage_location
+
+    loc = storage_location(data_root, ds, ver) or {"backend": "local"}
+    return {"backend": loc["backend"], "provider": loc.get("provider"), "bucket": loc.get("bucket"),
+            "committed_at": loc.get("committed_at"), "total_bytes": loc.get("total_bytes"), "synced_at": loc.get("synced_at")}
 
 
 def catalog_items(data_root: Path) -> list[dict[str, Any]]:
@@ -135,10 +144,14 @@ def dataset_metadata(data_root: Path, layer_id: str, version: str | None = None)
         except NotFound:
             return None
     ds, ver = layer["dataset_id"], layer["version"]
-    found = catalog.read_version(data_root, ds, ver)
-    if found is None:
+    from .catalog_index import record_folder
+
+    folder = record_folder(data_root, ds, ver)  # yerel sürüm klasörü veya bulut kaydının doğrulanmış yansısı
+    if folder is None or not (folder / "version.json").is_file():
         return None
-    record, quality, integrity = found["record"], found["quality"], found["integrity"]
+    from ..storage import read_json
+
+    record, quality, integrity = (read_json(folder / n) for n in ("version.json", "quality.json", "integrity.json"))
     dv = _one(_query(data_root, "SELECT * FROM dataset_versions WHERE dataset_id=? AND version=?", (ds, ver)))
     profile = _one(_query(data_root, "SELECT * FROM dataset_profile WHERE dataset_id=? AND version=?", (ds, ver)))
     meta = _one(_query(data_root, "SELECT * FROM layer_metadata WHERE layer_dataset_id=? AND version=?", (layer_id, ver)))

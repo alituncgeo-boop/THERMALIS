@@ -111,9 +111,12 @@ def mirror_release(store: ObjectStore, data_root: Path, prefix: str, commit: dic
         if (record.get("dataset_id"), record.get("version")) != (commit["dataset_id"], commit["version"]) \
                 or record.get("registration", {}).get("status") != "REGISTERED":
             raise PublicationError("record_does_not_match_commit", key=prefix)
+        # Tüm ek kayıtlar (rapor, içerik kimlikleri, özel kayıt kimlikleri, taşıma kaynağı, denetim ve doğrulama geçmişi)
+        # genel olarak yansıtılır; her biri işaretteki SHA-256 ile doğrulanır.
         for name in sorted(k[len(prefix + "records/"):] for k in objects if k.startswith(prefix + "records/")):
-            if name not in RECORD_NAMES and name.endswith(".md"):
-                _download_verified(store, prefix + "records/" + name, objects[prefix + "records/" + name], staging / name)
+            obj = objects[prefix + "records/" + name]
+            if name not in RECORD_NAMES and obj["size"] <= MAX_DOCUMENT_BYTES:
+                _download_verified(store, prefix + "records/" + name, obj, staging.joinpath(*name.split("/")))
         for doc in record.get("documents", []) or []:
             key = prefix + "payload/" + doc
             obj = objects.get(key)

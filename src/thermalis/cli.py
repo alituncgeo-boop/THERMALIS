@@ -358,6 +358,90 @@ def _storage_cloud_scan(args: argparse.Namespace) -> int:
     return 0 if result.status in ("ok", "busy") else 3
 
 
+def _release_store_from_settings(settings):
+    from .objectstore.factory import cloud_store
+    from .objectstore.prefixed import namespaced
+
+    return namespaced(cloud_store(settings, "publisher"), settings.cloud.namespace)
+
+
+def _storage_migrate_release(args: argparse.Namespace) -> int:
+    """Yerel kayıtlı sürümü buluta taşır. Varsayılan: kuru çalıştırma (ağ yok). Gerçek yükleme için --execute."""
+    from .cloud.migrate import MigrationRefused, migrate_release, plan_migration, verify_migration
+    from .objectstore.errors import StorageError
+    from .settings import effective_data_root, load_settings
+
+    settings = load_settings()
+    try:
+        plan = plan_migration(effective_data_root(settings), args.dataset_id, args.version, provider=settings.cloud.provider,
+                              bucket=settings.cloud.bucket or "", authorization_path=Path(args.authorization) if args.authorization else None)
+    except MigrationRefused as exc:
+        print(f"REDDEDİLDİ / REFUSED: {exc.code} {exc.detail}", file=sys.stderr)
+        return 2
+    print(f"Plan: {plan.dataset_id} {plan.version} · paket {plan.package_id} · erişim {plan.access_class} (değişmez)")
+    print(f"  {len(plan.files)} veri dosyası · {len(plan.records)} kayıt · {plan.total_bytes} bayt · işlem {plan.operation_id}")
+    print(f"  yerel doğrulama: {plan.local_verification['status']} ({plan.local_verification['checked_files']} dosya, tam SHA-256)")
+    for name in sorted(plan.records):
+        print(f"    records/{name}")
+    for w in plan.warnings:
+        print(f"  UYARI / WARNING: {w}")
+    if not args.execute:
+        print("Kuru çalıştırma: hiçbir şey yüklenmedi / dry run: nothing uploaded (gerçek taşıma için --execute)")
+        return 0
+    try:
+        store = _release_store_from_settings(settings)
+        result = migrate_release(store, plan)
+        check = verify_migration(store, plan)
+    except MigrationRefused as exc:
+        print(f"REDDEDİLDİ / REFUSED: {exc.code} {exc.detail}", file=sys.stderr)
+        return 2
+    except StorageError as exc:
+        print(f"BAŞARISIZ / FAILED: {exc.code} {exc.detail} — aynı komutla sürdürülebilir", file=sys.stderr)
+        return 3
+    print(f"SONUÇ / RESULT: {result['status']} {result['release_prefix']} · doğrulama {check['status']}")
+    return 0 if check["status"] == "PASS" else 2
+
+
+def _storage_compare_release(args: argparse.Namespace) -> int:
+    from .cloud.compare import compare_release
+    from .objectstore.errors import StorageError
+    from .settings import effective_data_root, load_settings
+
+    settings = load_settings()
+    try:
+        report = compare_release(effective_data_root(settings), _release_store_from_settings(settings), args.dataset_id, args.version,
+                                 provider=settings.cloud.provider, bucket=settings.cloud.bucket or "", namespace=settings.cloud.namespace)
+    except StorageError as exc:
+        print(f"BAŞARISIZ / FAILED: {exc.code} {exc.detail}", file=sys.stderr)
+        return 3
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report["status"] == "PASS" else 2
+
+
+def _storage_migration_rehearsal(args: argparse.Namespace) -> int:
+    from .cloud.e2e import run_migration_rehearsal
+    from .objectstore.errors import StorageError
+    from .objectstore.factory import cloud_store
+    from .objectstore.smoke import LIVE_ENV
+    from .settings import load_settings
+
+    if not args.confirm_live or os.environ.get(LIVE_ENV) != "1":
+        print(f"Canlı test kapalı / live test disabled: hem --confirm-live hem {LIVE_ENV}=1 gerekir.", file=sys.stderr)
+        return 1
+    settings = load_settings()
+    try:
+        steps = run_migration_rehearsal(cloud_store(settings, "publisher"), provider=settings.cloud.provider,
+                                        bucket=settings.cloud.bucket or "")
+    except StorageError as exc:
+        print(f"Başlatılamadı / could not start: {exc.code} {exc.detail}", file=sys.stderr)
+        return 1
+    for s in steps:
+        print(f"  [{s.status}] {s.name} — {s.detail}")
+    ok = all(s.status in ("PASS", "INFO") for s in steps)
+    print("SONUÇ / RESULT:", "PASS" if ok else "FAIL")
+    return 0 if ok else 2
+
+
 def _storage_cloud_intake_toggle(args: argparse.Namespace) -> int:
     from .settings import load_settings, save_settings
 
@@ -450,6 +534,19 @@ def main(argv: list[str] | None = None) -> int:
     ci.add_argument("state", choices=["on", "off"])
     ci.add_argument("--interval", type=int, default=None, help="Tarama aralığı (saniye, en az 60)")
     ci.set_defaults(func=_storage_cloud_intake_toggle)
+    mr = storage_sub.add_parser("migrate-release", help="Yerel sürümü buluta taşı (varsayılan kuru çalıştırma; --execute ile gerçek)")
+    mr.add_argument("dataset_id")
+    mr.add_argument("version")
+    mr.add_argument("--authorization", default=None, help="RESTRICTED/UNKNOWN için bulut depolama yetki kaydı (JSON)")
+    mr.add_argument("--execute", action="store_true", help="Gerçekten yükle (yoksa yalnız doğrula ve planı göster)")
+    mr.set_defaults(func=_storage_migrate_release)
+    cr2 = storage_sub.add_parser("compare-release", help="Yerel kayıt ile bulut kopyasını bilimsel olarak karşılaştır")
+    cr2.add_argument("dataset_id")
+    cr2.add_argument("version")
+    cr2.set_defaults(func=_storage_compare_release)
+    rh = storage_sub.add_parser("migration-rehearsal", help="CANLI taşıma provası (yalnız sentetik; yalıtılmış ad alanı)")
+    rh.add_argument("--confirm-live", action="store_true")
+    rh.set_defaults(func=_storage_migration_rehearsal)
 
     args = parser.parse_args(argv)
     return args.func(args)

@@ -84,6 +84,12 @@ class VerifyRequest(BaseModel):
     version: str
 
 
+class MaterializeRequest(BaseModel):
+    """Bir veri seti sürümünün varlığını yerel, doğrulanmış bir yol olarak hazırla (bulutta ise önbelleğe indir)."""
+    id: str
+    version: str | None = None
+
+
 class SemanticVerification(BaseModel):
     """Yetkili kullanıcının alan anlamı doğrulaması; boş bırakılan öznitelik değiştirilmez."""
     dataset_id: str
@@ -513,6 +519,38 @@ def create_app(static_dir: Path | None = None, *, watch: bool | None = None) -> 
         from .data import contract
 
         return _contract(lambda: contract.access(_root(), id, version, authorized=authorized(request)))
+
+    @app.post("/api/data/v1/materialize")
+    def v1_materialize(payload: MaterializeRequest, request: Request) -> dict:
+        """Yerel analiz bileşenleri için erişim: yerel sürümde mevcut yol; bulut sürümünde doğrulanmış önbellek kopyası.
+
+        Fiziksel erişim kuralı ``/access`` ile aynıdır: kısıtlı veri yalnız yerel bileşen anahtarıyla.
+        """
+        from .cloud.access import materialize_asset
+        from .data import contract
+        from .objectstore.errors import StorageError
+
+        root = _root()
+        settings = load_settings()
+        cond = _contract(lambda: contract.access(root, payload.id, payload.version, authorized=authorized(request)))
+        if cond["conditions"]["physical_access"] != "available":
+            raise _error(403, "physical_access_not_authorized")
+        store = cache = None
+        if (cond.get("storage") or {}).get("backend") == "r2":
+            try:
+                from .objectstore.factory import cloud_store, object_cache
+                from .objectstore.prefixed import namespaced
+
+                store = namespaced(cloud_store(settings, "publisher"), settings.cloud.namespace)
+                cache = object_cache(settings)
+            except StorageError as exc:
+                raise _error(503, "cloud_unavailable") from exc
+        try:
+            return _contract(lambda: materialize_asset(root, store, cache, payload.id, payload.version))
+        except StorageError as exc:
+            if exc.code in ("cache_capacity_exceeded", "insufficient_disk_space"):
+                raise _error(507, exc.code) from exc
+            raise _error(503, "cloud_unavailable") from exc
 
     @app.get("/api/data/v1/diff")
     def v1_diff(id: str, to: str, from_: str = Query(alias="from")) -> dict:

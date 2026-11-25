@@ -140,3 +140,181 @@ def run_e2e(base_store: ObjectStore, *, provider: str, bucket: str, run_id: str 
                 break  # sonraki adımlar bunlara bağlı
     steps.append(Step("namespace", "INFO", namespace))
     return steps
+
+
+def _synthetic_authorization(plan_like: dict, provider: str, bucket: str) -> dict:
+    from . import authorization as auth
+
+    record = auth.template(provider=provider, bucket=bucket, **plan_like)
+    record.update(granted_by="SYNTHETIC REHEARSAL — NOT A REAL GRANT", authority="SYNTHETIC",
+                  document_reference="SYNTHETIC-NO-REAL-DATA", granted_at="2026-01-01T00:00:00Z")
+    return record
+
+
+def prepare_legacy_release(tmp: Path, data_root: Path, *, dataset_id: str, package_id: str, restricted: bool) -> None:
+    """Sentetik paketi geçici kökte kaydeder ve HD01 benzeri eski biçime getirir (+ doğrulama, denetim, geçmiş)."""
+    from ..data import contract, semantics
+    from ..data.catalog_index import rebuild_index
+    from ..data.ingest import run_ingest
+    from ..data.register import verify_registered
+    from ..storage import write_json_atomic
+    from .synthetic import build_package, make_legacy_record, write_ready_marker
+
+    incoming = tmp / f"IN-{package_id}"
+    incoming.mkdir(parents=True)
+    overrides = None if restricted else {"not_released_as_public_open_data": None, "access_classification": "PUBLIC"}
+    write_ready_marker(build_package(incoming / package_id, version="1.0.0", dataset_id=dataset_id, package_id=package_id,
+                                     release_overrides=overrides, globalid=True))
+    summary = run_ingest(incoming, data_root, settle_seconds=0)
+    assert all(r.technical == "PASS" for r in summary.results), [r.stop_reason for r in summary.results]
+    make_legacy_record(data_root, dataset_id, "1.0.0")
+    rebuild_index(data_root)  # eski kayıt: içerik kimlikleri türetilmiş önbellekte hesaplanır (HD01 ile aynı)
+    lid = f"{dataset_id}/NEIGHBORHOODS"
+    cid = contract.field_info(data_root, lid, "1.0.0", "YAKA")["content_id"]
+    semantics.append_verification(data_root, {"dataset_id": lid, "version": "1.0.0", "field": "YAKA",
+                                              "meaning": "Side code (synthetic rehearsal)", "verified_by": "rehearsal"},
+                                  content_id=cid, auth_method="in_process")
+    audit = data_root / "data" / "_audits" / f"aud-{package_id.lower()}"
+    write_json_atomic(audit / "INDEPENDENT_AUDIT_RESULT.json", {"schema_version": "1.0", "audit_id": audit.name, "dataset_id": dataset_id,
+                                                                "version": "1.0.0", "status": "INDEPENDENT_AUDIT_PENDING",
+                                                                "reason": "synthetic rehearsal"})
+    verify_registered(data_root, dataset_id, "1.0.0")
+    rebuild_index(data_root)
+
+
+def run_migration_rehearsal(base_store: ObjectStore, *, provider: str, bucket: str, run_id: str | None = None,
+                            cache_root: Path | None = None) -> list[Step]:
+    """Genel taşıma mekanizmasının canlı provası: HD01 benzeri eski biçimli SENTETİK kayıtlar, yalıtılmış ad alanı."""
+    import hashlib
+
+    from ..data import catalog, contract
+    from ..data.catalog_index import _query, query_record_issues
+    from ..objectstore.cache import ObjectCache
+    from .access import materialize_asset
+    from .catalog_sync import sync_catalog
+    from .compare import compare_release
+    from .migrate import MigrationRefused, migrate_release, plan_migration, verify_migration
+
+    run_id = run_id or f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
+    namespace = f"e2e-tests/{run_id}/"
+    store = PrefixedStore(base_store, namespace)
+    steps: list[Step] = []
+    public_ds, restricted_ds = "THERMALIS_DATA/SYN98_MIGRATION/TESTKENT", "THERMALIS_DATA/SYN97_MIGRATION/TESTKENT"
+
+    def step(name: str, fn) -> bool:
+        try:
+            steps.append(Step(name, "PASS", str(fn() or "")))
+            return True
+        except (StorageError, MigrationRefused, AssertionError, KeyError, ValueError, OSError) as exc:
+            steps.append(Step(name, "FAIL", f"{type(exc).__name__}: {exc}"))
+            return False
+
+    with tempfile.TemporaryDirectory(prefix="thermalis-mig-") as tmp_name:
+        tmp = Path(tmp_name)
+        data_root = tmp / "THERMALIS_DATA"
+        data_root.mkdir()
+        prepare_legacy_release(tmp, data_root, dataset_id=public_ds, package_id="SYN98_MIGRATION_v1.0.0", restricted=False)
+        prepare_legacy_release(tmp, data_root, dataset_id=restricted_ds, package_id="SYN97_MIGRATION_v1.0.0", restricted=True)
+        folder = catalog.version_dir(data_root, public_ds, "1.0.0")
+        before = {p.relative_to(folder).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.rglob("*") if p.is_file()}
+        ctx: dict = {}
+
+        def legacy_shape():
+            rec = json.loads((folder / "version.json").read_text(encoding="utf-8"))
+            assert not any("content" in l for l in rec["layers"].values()) and "package_fingerprint" not in rec["source"]
+            codes = {i["code"] for i in query_record_issues(data_root, public_ds, "1.0.0")}
+            assert {"PACKAGE_FINGERPRINT_NOT_RECORDED", "RECORD_FILES_WRITABLE"} <= codes, codes
+            special = contract.quality(data_root, f"{public_ds}/NEIGHBORHOODS")["special_records"]
+            assert special and all(s.get("globalid") for s in special), special
+            return f"eski biçim (içerik kimliği/parmak izi kayıtta yok), {len(special)} özel kayıt GLOBALID'li"
+
+        def plan():
+            p = plan_migration(data_root, public_ds, "1.0.0", provider=provider, bucket=bucket)
+            names = set(p.records)
+            need = {"version.json", "quality.json", "integrity.json", "layer_facts.json", "quality_identifiers.json", "migration.json",
+                    "semantic_verifications.jsonl", "reverification_history.jsonl"}
+            assert need <= names and any(n.startswith("audits/") for n in names), sorted(names)
+            ctx["plan"] = p
+            return f"kuru çalıştırma: {len(p.files)} veri dosyası, {len(p.records)} kayıt, {p.total_bytes} B; uyarılar {p.warnings}"
+
+        def restricted_needs_authorization():
+            try:
+                plan_migration(data_root, restricted_ds, "1.0.0", provider=provider, bucket=bucket)
+            except MigrationRefused as exc:
+                assert exc.code == "authorization_required", exc.code
+            else:
+                raise AssertionError("restricted release planned without authorization")
+            return "RESTRICTED sürüm yetki kaydı olmadan reddedildi"
+
+        def migrate():
+            r = migrate_release(store, ctx["plan"])
+            assert r["status"] == "MIGRATED", r
+            return f"{r['objects']} nesne, {r['bytes']} B yayımlandı"
+
+        def idempotent():
+            again = migrate_release(store, plan_migration(data_root, public_ds, "1.0.0", provider=provider, bucket=bucket))
+            assert again["status"] == "ALREADY_MIGRATED", again
+            return "aynı işlem kimliği: yeniden yükleme yok"
+
+        def verified():
+            v = verify_migration(store, ctx["plan"])
+            assert v["status"] == "PASS", v
+            return f"{v['payload_files']} veri dosyası integrity.json ile birebir; kayıtlar birebir; tam geri okuma {v['full_readback']}"
+
+        def compared():
+            c = compare_release(data_root, store, public_ds, "1.0.0", provider=provider, bucket=bucket, namespace=namespace)
+            assert c["status"] == "PASS", c["differences"]
+            return f"{len(c['layers'])} katman · alanlar: {', '.join(c['compared_fields'])} · fark yok"
+
+        def dual_period():
+            sync_catalog(store, data_root, provider=provider, bucket=bucket, namespace=namespace)
+            rows = _query(data_root, "SELECT backend FROM storage_locations WHERE dataset_id=?", (public_ds,))
+            copies = _query(data_root, "SELECT same_fingerprint FROM cloud_copies WHERE dataset_id=?", (public_ds,))
+            issues = {i["code"] for i in query_record_issues(data_root, public_ds, "1.0.0")}
+            assert [r["backend"] for r in rows] == ["local"] and [c["same_fingerprint"] for c in copies] == [1], (rows, copies)
+            assert "DUPLICATE_ACROSS_BACKENDS" not in issues
+            return "katalog yerel kaydı kullanıyor; bulut kopyası doğrulanmış kopya olarak görünüyor (sorun değil)"
+
+        def materialize():
+            from ..data.vector_inspect import layer_facts
+
+            cloud_only = tmp / "CLOUD_ONLY"
+            cloud_only.mkdir()
+            sync_catalog(store, cloud_only, provider=provider, bucket=bucket, namespace=namespace, full=True)
+            cache = ObjectCache(cache_root or tmp / "cache", 1024 ** 3, protected_roots=[data_root])
+            m = materialize_asset(cloud_only, store, cache, f"{public_ds}/NEIGHBORHOODS")
+            local_cid = layer_facts(folder / "payload" / "01_ADMIN" / "SOURCE" / "Admin.gdb", "Neighborhoods")["content_id"]
+            assert m["materialized"] and layer_facts(Path(m["path"]), "Neighborhoods")["content_id"] == local_cid, m
+            q = contract.quality(cloud_only, f"{public_ds}/NEIGHBORHOODS")
+            assert all(s.get("globalid") for s in q["special_records"])
+            return f"buluttan {m['files']} dosya ({m['bytes']} B) doğrulanarak önbelleğe indirildi; GDAL içerik kimliği yerelle aynı; GLOBALID'ler korunmuş"
+
+        def restricted_with_authorization():
+            rfolder = catalog.version_dir(data_root, restricted_ds, "1.0.0")
+            rec = json.loads((rfolder / "version.json").read_text(encoding="utf-8"))
+            manifest_sha = hashlib.sha256((rfolder / "payload" / "PACKAGE" / "MANIFEST.json").read_bytes()).hexdigest()
+            auth_path = tmp / "auth.json"
+            auth_path.write_text(json.dumps(_synthetic_authorization({
+                "dataset_id": restricted_ds, "version": "1.0.0", "package_id": rec["source"]["package_id"],
+                "manifest_sha256": manifest_sha, "access_class": "RESTRICTED"}, provider, bucket)), encoding="utf-8")
+            p = plan_migration(data_root, restricted_ds, "1.0.0", provider=provider, bucket=bucket, authorization_path=auth_path)
+            r = migrate_release(store, p)
+            v = verify_migration(store, p)
+            assert r["status"] == "MIGRATED" and v["status"] == "PASS" and v["access_class"] == "RESTRICTED", (r, v)
+            return "RESTRICTED sentetik sürüm (sentetik yetki kaydıyla) taşındı; erişim sınıfı RESTRICTED kaldı"
+
+        def local_untouched():
+            after = {p.relative_to(folder).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.rglob("*") if p.is_file()}
+            assert after == before
+            return f"yerel sürüm klasörü ({len(before)} dosya) bayt bayt aynı"
+
+        for name, fn in (("legacy_record_shape", legacy_shape), ("migration_plan_dry_run", plan),
+                         ("restricted_requires_authorization", restricted_needs_authorization), ("migrate_release", migrate),
+                         ("idempotent_rerun", idempotent), ("payload_and_records_identical", verified),
+                         ("scientific_comparison", compared), ("dual_period_catalog", dual_period),
+                         ("verified_materialization", materialize), ("restricted_with_authorization", restricted_with_authorization),
+                         ("local_release_untouched", local_untouched)):
+            if not step(name, fn) and name in ("migration_plan_dry_run", "migrate_release"):
+                break
+    steps.append(Step("namespace", "INFO", namespace))
+    return steps

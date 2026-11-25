@@ -49,6 +49,8 @@ storage = { cmd = "python -m thermalis storage", cwd = "src" }
 r2-smoke = { cmd = "python -m thermalis storage smoke-test --role publisher --confirm-live", cwd = "src" }
 # CANLI uçtan uca bulut kabul testi (yalnız elle; sentetik; e2e-tests/<çalıştırma>/ ad alanı, geçici katalog)
 r2-intake-e2e = { cmd = "python -m thermalis storage intake-e2e --role publisher --confirm-live", cwd = "src" }
+# CANLI taşıma provası (yalnız elle; HD01 benzeri eski biçimli SENTETİK kayıtlar; e2e-tests/<çalıştırma>/ ad alanı)
+r2-migration-rehearsal = { cmd = "python -m thermalis storage migration-rehearsal --confirm-live", cwd = "src" }
 # Testler
 test = "pytest -q"
 test-ui = { cmd = "npm test", cwd = "frontend", depends-on = ["install-ui"] }

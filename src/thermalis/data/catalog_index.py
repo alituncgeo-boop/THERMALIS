@@ -38,7 +38,7 @@ from . import catalog, semantics
 from .integrity import sha256_file
 
 INDEX_FILE = "catalog_index.sqlite"
-INDEX_SCHEMA_VERSION = "2.1"  # 2.0: layer_versions, package_layers, metadata_conflicts · 2.1: storage_locations (bulut)
+INDEX_SCHEMA_VERSION = "2.2"  # 2.0: layer_versions… · 2.1: storage_locations (bulut) · 2.2: cloud_copies (taşıma)
 
 
 _SEMVER = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
@@ -110,6 +110,9 @@ CREATE TABLE storage_locations(
   dataset_id TEXT, version TEXT, backend TEXT, provider TEXT, bucket TEXT, namespace TEXT, prefix TEXT,
   committed_at TEXT, commit_operation TEXT, object_count INTEGER, total_bytes INTEGER, synced_at TEXT, record_dir TEXT,
   PRIMARY KEY(dataset_id, version));
+CREATE TABLE cloud_copies(
+  dataset_id TEXT, version TEXT, bucket TEXT, prefix TEXT, commit_operation TEXT, committed_at TEXT,
+  same_fingerprint INTEGER, record_dir TEXT, PRIMARY KEY(dataset_id, version));
 CREATE TABLE metadata_conflicts(
   dataset_id TEXT, version TEXT, kind TEXT, subject TEXT, item TEXT, authoritative_value TEXT, authoritative_source TEXT,
   other_value TEXT, other_source TEXT, issue TEXT);
@@ -579,6 +582,8 @@ def semantics_completeness(entries: list[dict[str, Any]]) -> tuple[str, str]:
 
 
 FACTS_CACHE = "_derived/layer_facts.json"
+SUPPLEMENTARY_FACTS = "layer_facts.json"  # yayınla birlikte saklanan içerik kimlikleri (eski kayıtlar için)
+SUPPLEMENTARY_IDENTIFIERS = "quality_identifiers.json"  # özel kayıtların kalıcı kimlikleri (GLOBALID vb.)
 
 
 def _facts_for(data_root: Path, folder: Path, record: dict[str, Any], cache: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], str]:
@@ -590,6 +595,12 @@ def _facts_for(data_root: Path, folder: Path, record: dict[str, Any], cache: dic
     layers = record.get("layers", {}) or {}
     if layers and all(isinstance(l.get("content"), dict) for l in layers.values()):
         return {n: l["content"] for n, l in layers.items()}, "version.json"
+    # Taşınmış eski kayıtlar: içerik kimlikleri yayınla birlikte saklanan ek kayıttadır (bulut yansısında GDB yoktur).
+    supplementary = folder / SUPPLEMENTARY_FACTS
+    if supplementary.is_file():
+        data = _read(supplementary)
+        if isinstance(data, dict) and set(data.get("layers", {})) == set(layers):
+            return data["layers"], f"records/{SUPPLEMENTARY_FACTS}"
     key = folder.relative_to(catalog.data_dir(data_root)).as_posix()
     fingerprint, _ = _registered_fingerprint(folder, record)
     cached = cache.get(key)
@@ -679,8 +690,18 @@ def rebuild_index(data_root: Path) -> Path:
                 rec = _read(folder / "version.json")
                 key = (rec.get("dataset_id"), rec.get("version"))
                 if key in local_keys:
-                    con.execute("INSERT INTO record_issues VALUES (?,?,?,?,?)",
-                                (key[0], key[1], "DUPLICATE_ACROSS_BACKENDS", "r2", str(folder)))
+                    # Yerel kayıt esas kalır (geçiş onayına kadar). Aynı paketin (aynı MANIFEST özeti) doğrulanmış bulut
+                    # kopyası bir sorun değildir: ayrı tabloda gösterilir. Farklı içerikli kopya ise kayıt sorunudur.
+                    local_folder = catalog.version_dir(data_root, key[0], key[1])
+                    same = _registered_fingerprint(local_folder, _read(local_folder / "version.json"))[0] == \
+                        _registered_fingerprint(folder, rec)[0]
+                    loc = _read(folder / LOCATION_NAME)
+                    con.execute("INSERT OR REPLACE INTO cloud_copies VALUES (?,?,?,?,?,?,?,?)",
+                                (key[0], key[1], loc.get("bucket"), loc.get("release_prefix"), loc.get("operation_id"),
+                                 loc.get("committed_at"), int(bool(same)), str(folder)))
+                    if not same:
+                        con.execute("INSERT INTO record_issues VALUES (?,?,?,?,?)",
+                                    (key[0], key[1], "DUPLICATE_ACROSS_BACKENDS", "r2", str(folder)))
                     continue
                 entries = _index_version(con, folder)
                 if entries is None:

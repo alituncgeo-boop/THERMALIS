@@ -106,8 +106,13 @@ def _storage_summary(data_root: Path, ds: str, ver: str) -> dict[str, Any]:
     from .catalog_index import storage_location
 
     loc = storage_location(data_root, ds, ver) or {"backend": "local"}
+    copy = _one(_query(data_root, "SELECT bucket, committed_at, same_fingerprint FROM cloud_copies WHERE dataset_id=? AND version=?",
+                       (ds, ver)))
     return {"backend": loc["backend"], "provider": loc.get("provider"), "bucket": loc.get("bucket"),
-            "committed_at": loc.get("committed_at"), "total_bytes": loc.get("total_bytes"), "synced_at": loc.get("synced_at")}
+            "committed_at": loc.get("committed_at"), "total_bytes": loc.get("total_bytes"), "synced_at": loc.get("synced_at"),
+            # Geçiş döneminde yerel kaydın doğrulanmış bulut kopyası (katalog yerel kaydı kullanmaya devam eder).
+            "cloud_copy": None if copy is None else {"bucket": copy["bucket"], "committed_at": copy["committed_at"],
+                                                     "same_fingerprint": bool(copy["same_fingerprint"])}}
 
 
 def catalog_items(data_root: Path) -> list[dict[str, Any]]:

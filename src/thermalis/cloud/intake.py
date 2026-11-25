@@ -425,6 +425,13 @@ class CloudIntake:
             records["INGESTION_RESULT.json"] = Path(entry["result_path"]).read_bytes()
         if authorization is not None:
             records[layout.AUTHORIZATION_NAME] = _canonical(authorization)
+        # Genel ek kayıtlar: içerik kimlikleri ve özel kayıt kimlikleri (GLOBALID) — bulut yansısında GDB olmadığı için.
+        from .supplementary import SupplementaryError, build_supplementary
+
+        try:
+            records.update(build_supplementary(reg_root, version_dir, record))
+        except SupplementaryError as exc:
+            raise Rejected(exc.code, exc.detail) from None
 
         self._local(package_id, "INGESTING", "yayın: yükleme + geri okuma doğrulaması + commit işareti", "PUBLISHING", **base)
         allowed = ("PUBLIC", "SYNTHETIC") + ((access,) if authorization is not None else ())

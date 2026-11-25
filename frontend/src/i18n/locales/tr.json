@@ -73,6 +73,9 @@
     "verification_log_busy": "Doğrulama günlüğü kullanımda. Birazdan yeniden deneyin.",
     "session_code_invalid": "Oturum kodu geçersiz veya süresi dolmuş.",
     "cloud_unavailable": "Bulut deposuna ulaşılamadı veya kimlik bilgisi yok; işlem yapılmadı.",
+    "physical_access_not_authorized": "Kısıtlı veriye fiziksel erişim yalnız yetkili yerel bileşenle mümkündür.",
+    "cache_capacity_exceeded": "Varlık yerel önbellek sınırından büyük; önbelleğe indirilmedi (aralıklı okuma kullanın veya sınırı yükseltin).",
+    "insufficient_disk_space": "Diskte yeterli boş alan yok; hiçbir şey indirilmedi.",
     "validation": "Girilen bilgiler geçersiz.",
     "network": "Sunucuya ulaşılamadı. THERMALIS çalışıyor mu?",
     "unknown": "Beklenmeyen bir hata oluştu."
@@ -195,6 +198,7 @@
       "location_local": "Bu bilgisayardaki yerel veri kökü",
       "location_r2": "Cloudflare R2 · kova {{bucket}} (doğrulanmış commit işareti)",
       "committed_line": "işaretlendi {{at}} · {{size}}",
+      "cloud_copy_line": "Doğrulanmış bulut kopyası var ({{at}}); katalog geçişe kadar yerel kaydı kullanır.",
       "backend": { "local": "Yerel", "r2": "Bulut (R2)" },
       "provider": { "r2": "Cloudflare R2" },
       "provider_line": "{{provider}} · kova {{bucket}}",

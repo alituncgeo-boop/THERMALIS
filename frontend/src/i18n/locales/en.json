@@ -73,6 +73,9 @@
     "verification_log_busy": "The verification log is in use. Try again in a moment.",
     "session_code_invalid": "The session code is invalid or has expired.",
     "cloud_unavailable": "The cloud store could not be reached or credentials are missing; nothing was done.",
+    "physical_access_not_authorized": "Physical access to restricted data is only possible for an authorized local component.",
+    "cache_capacity_exceeded": "The asset is larger than the local cache limit; it was not downloaded (use range reads or raise the limit).",
+    "insufficient_disk_space": "Not enough free disk space; nothing was downloaded.",
     "validation": "The information entered is not valid.",
     "network": "Cannot reach the server. Is THERMALIS running?",
     "unknown": "An unexpected error occurred."
@@ -195,6 +198,7 @@
       "location_local": "Local data root on this computer",
       "location_r2": "Cloudflare R2 · bucket {{bucket}} (verified commit marker)",
       "committed_line": "committed {{at}} · {{size}}",
+      "cloud_copy_line": "A verified cloud copy exists ({{at}}); the catalog uses the local record until cutover.",
       "backend": { "local": "Local", "r2": "Cloud (R2)" },
       "provider": { "r2": "Cloudflare R2" },
       "provider_line": "{{provider}} · bucket {{bucket}}",

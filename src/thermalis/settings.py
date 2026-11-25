@@ -19,6 +19,31 @@ Language = Literal["tr", "en"]
 SETTINGS_SCHEMA_VERSION = "1.0"
 
 
+class CloudSettings(BaseModel):
+    """S3 uyumlu bulut deposu (Cloudflare R2). GİZLİ DEĞER İÇERMEZ: kimlik bilgileri OS kimlik deposundadır.
+
+    Uç nokta ve kova makineye özel ayardır; kodda hesap kimliği veya uç nokta sabit yazılmaz.
+    Bu ayarların varlığı bulutu etkinleştirmez: uygulamanın veri deposu ``storage_backend`` ile seçilir.
+    """
+
+    provider: Literal["r2"] = "r2"
+    endpoint: str | None = None
+    bucket: str | None = None
+    region: str = "auto"
+    credential_profile: str = Field(default="default", pattern=r"^[a-z0-9][a-z0-9-]{0,31}$")
+    connect_timeout_seconds: float = Field(default=10.0, ge=1, le=120)
+    read_timeout_seconds: float = Field(default=60.0, ge=1, le=600)
+    max_attempts: int = Field(default=5, ge=1, le=10)
+    multipart_part_size_mib: int = Field(default=64, ge=5, le=5120)
+
+
+class CacheSettings(BaseModel):
+    """Yerel nesne önbelleği (atılabilir). ``cache_dir`` boşsa kullanıcı önbellek klasörü kullanılır."""
+
+    cache_dir: str | None = None
+    max_bytes: int = Field(default=20 * 1024 ** 3, ge=1024 * 1024)
+
+
 class Settings(BaseModel):
     schema_version: str = SETTINGS_SCHEMA_VERSION
     language: Language = "tr"
@@ -31,6 +56,10 @@ class Settings(BaseModel):
     transfer_scan_interval_seconds: int = Field(default=30, ge=10, le=3600)
     # Hazır işareti olmayan paketlerde son değişiklikten sonra beklenecek süre.
     transfer_settle_seconds: int = Field(default=120, ge=0, le=86400)
+    # Kayıtlı sürümlerin deposu. Açık geçiş onayına kadar yalnız "local" geçerlidir.
+    storage_backend: Literal["local"] = "local"
+    cloud: CloudSettings = Field(default_factory=CloudSettings)
+    cache: CacheSettings = Field(default_factory=CacheSettings)
 
 
 def config_dir() -> Path:

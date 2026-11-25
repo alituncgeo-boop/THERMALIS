@@ -15,6 +15,9 @@ platformdirs = ">=4.2"
 pytest = ">=8"
 httpx = ">=0.27"
 gdal = ">=3.9"
+boto3 = "==1.43.127"
+botocore = "==1.43.127"
+keyring = "==25.7.0"
 
 [tasks]
 # Arayüz bağımlılıklarını kur ve derle
@@ -24,6 +27,10 @@ build-ui = { cmd = "npm run build", cwd = "frontend", depends-on = ["install-ui"
 start = { cmd = "python -m thermalis start", cwd = "src", depends-on = ["build-ui"] }
 # DATA kataloğu: pixi run data register "<paket klasörü>" · pixi run data list
 data = { cmd = "python -m thermalis data", cwd = "src" }
+# Nesne deposu: pixi run storage status · storage credentials set --role publisher
+storage = { cmd = "python -m thermalis storage", cwd = "src" }
+# CANLI R2 duman testi (yalnız elle; THERMALIS_R2_LIVE_TEST=1 gerekir; sentetik veri). Bkz. docs/cloud-storage.md
+r2-smoke = { cmd = "python -m thermalis storage smoke-test --role publisher --confirm-live", cwd = "src" }
 # Testler
 test = "pytest -q"
 test-ui = { cmd = "npm test", cwd = "frontend", depends-on = ["install-ui"] }

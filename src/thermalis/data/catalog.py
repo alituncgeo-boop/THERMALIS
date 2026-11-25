@@ -46,6 +46,32 @@ def version_dir(data_root: Path, dataset_id: str, version: str) -> Path:
     return dataset_dir(data_root, dataset_id) / version
 
 
+def release_store(data_root: Path):
+    """Kayıtlı sürümlerin bulunduğu depo. Varsayılan ve şu an tek etkin arka uç: yerel dosya sistemi.
+
+    Anahtarlar ``data/`` klasörüne görelidir (``datasets/<SEG>/<SEG>/<sürüm>/...``). Bulut arka ucu
+    açık geçiş onayı olmadan burada kullanılmaz.
+    """
+    from ..objectstore.local import LocalBackend
+
+    return LocalBackend(data_dir(data_root))
+
+
+def version_prefix(dataset_id: str, version: str) -> str:
+    """Bir sürüm klasörünün depo öneki (``datasets/<SEG>/<SEG>/<sürüm>/``)."""
+    version_dir(Path("."), dataset_id, version)  # kimlik ve sürüm doğrulaması
+    return "/".join(["datasets", *dataset_segments(dataset_id), version]) + "/"
+
+
+def version_record_folders(data_root: Path) -> list[Path]:
+    """``version.json`` taşıyan klasörler (anahtar sırasıyla). Okuma depo arayüzü üzerinden yapılır."""
+    data = data_dir(data_root)
+    if not (data / "datasets").is_dir():
+        return []
+    keys = [i.key for i in release_store(data_root).list("datasets/") if i.key.rsplit("/", 1)[-1] == "version.json"]
+    return sorted(data.joinpath(*k.split("/")[:-1]) for k in keys)
+
+
 def _read(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
@@ -57,7 +83,7 @@ def list_versions(data_root: Path) -> list[dict[str, Any]]:
     if not root.is_dir():
         return []
     summaries = []
-    for record_path in sorted(root.rglob("version.json")):
+    for record_path in (folder / "version.json" for folder in version_record_folders(data_root)):
         record = _read(record_path)
         if record.get("registration", {}).get("status") != "REGISTERED":
             continue

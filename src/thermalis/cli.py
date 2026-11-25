@@ -213,6 +213,102 @@ def _data_findings(args: argparse.Namespace) -> int:
     return 0
 
 
+def _storage_status(args: argparse.Namespace) -> int:
+    from .data.catalog import release_store
+    from .objectstore.credentials import credential_status
+    from .objectstore.errors import StorageError
+    from .objectstore.factory import object_cache
+    from .settings import effective_data_root, load_settings
+
+    settings = load_settings()
+    store = release_store(effective_data_root(settings))
+    print(f"Etkin depo / active backend: {settings.storage_backend}  (kök / root: {store.root})")
+    print("Yetenekler / capabilities:", json.dumps(store.capabilities.as_dict()))
+    cloud = settings.cloud
+    configured = bool(cloud.endpoint and cloud.bucket)
+    print(f"Bulut / cloud ({cloud.provider}): {'yapılandırıldı / configured' if configured else 'yapılandırılmadı / not configured'}"
+          + (f"  bucket={cloud.bucket}" if configured else ""))
+    try:
+        roles = credential_status(cloud.credential_profile)
+        print("Kimlik bilgisi / credentials (değer gösterilmez):", ", ".join(f"{r}={'var' if ok else 'yok'}" for r, ok in roles.items()))
+    except StorageError as exc:
+        print(f"Kimlik deposu / credential store: {exc.code} {exc.detail}")
+    try:
+        cache = object_cache(settings)
+        print(f"Önbellek / cache: {cache.root}  {cache.usage()} / {cache.max_bytes} bayt")
+    except StorageError as exc:
+        print(f"Önbellek / cache: {exc.code} {exc.detail}")
+    return 0
+
+
+def _storage_configure_cloud(args: argparse.Namespace) -> int:
+    from .objectstore.errors import StorageError
+    from .objectstore.s3 import validate_endpoint
+    from .settings import load_settings, save_settings
+
+    settings = load_settings()
+    try:
+        endpoint = validate_endpoint(args.endpoint)
+    except StorageError:
+        print("Geçersiz uç nokta / invalid endpoint: yalnız https://<host> (yol/sorgu yok)", file=sys.stderr)
+        return 1
+    settings.cloud.endpoint = endpoint
+    settings.cloud.bucket = args.bucket
+    settings.cloud.credential_profile = args.profile
+    type(settings.cloud).model_validate(settings.cloud.model_dump())
+    save_settings(settings)
+    print("Bulut ayarı kaydedildi (gizli değer yok) / cloud settings saved (no secrets). Etkin depo değişmedi: local.")
+    return 0
+
+
+def _storage_credentials(args: argparse.Namespace) -> int:
+    import getpass
+
+    from .objectstore.credentials import delete_credential, store_credential
+    from .objectstore.errors import StorageError
+    from .settings import load_settings
+
+    profile = args.profile or load_settings().cloud.credential_profile
+    try:
+        if args.action == "clear":
+            removed = delete_credential(profile, args.role)
+            print(f"{profile}:{args.role} " + ("silindi / removed" if removed else "kayıt yok / not present"))
+            return 0
+        if not sys.stdin.isatty() and not args.allow_non_tty:
+            print("Etkileşimli terminal gerekli / interactive terminal required (değerler yankısız sorulur).", file=sys.stderr)
+            return 1
+        key_id = getpass.getpass("Access Key ID (gizli giriş / hidden): ").strip()
+        secret = getpass.getpass("Secret Access Key (gizli giriş / hidden): ").strip()
+        store_credential(profile, args.role, key_id, secret)
+    except StorageError as exc:
+        print(f"Başarısız / failed: {exc.code} {exc.detail}", file=sys.stderr)
+        return 1
+    print(f"{profile}:{args.role} işletim sistemi kimlik deposuna kaydedildi / stored in the OS credential store.")
+    return 0
+
+
+def _storage_smoke_test(args: argparse.Namespace) -> int:
+    from .objectstore.errors import StorageError
+    from .objectstore.factory import cloud_store
+    from .objectstore.smoke import LIVE_ENV, run_smoke
+    from .settings import load_settings
+
+    if not args.confirm_live or os.environ.get(LIVE_ENV) != "1":
+        print(f"Canlı test kapalı / live test disabled: hem --confirm-live hem {LIVE_ENV}=1 gerekir.", file=sys.stderr)
+        return 1
+    try:
+        store = cloud_store(load_settings(), args.role)
+        steps = run_smoke(store)
+    except StorageError as exc:
+        print(f"Başlatılamadı / could not start: {exc.code} {exc.detail}", file=sys.stderr)
+        return 1
+    for s in steps:
+        print(f"  [{s.status}] {s.name} — {s.detail}")
+    ok = all(s.status == "PASS" for s in steps)
+    print("SONUÇ / RESULT:", "PASS" if ok else "FAIL")
+    return 0 if ok else 2
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="thermalis", description="THERMALIS — Urban Climate Intelligence Framework")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -260,6 +356,26 @@ def main(argv: list[str] | None = None) -> int:
     fnd.add_argument("--category", default=None)
     fnd.add_argument("--list", action="store_true")
     fnd.set_defaults(func=_data_findings)
+
+    storage = sub.add_parser("storage", help="Nesne deposu ve bulut ayarları / object storage")
+    storage_sub = storage.add_subparsers(dest="storage_command", required=True)
+    st = storage_sub.add_parser("status", help="Depo, önbellek ve kimlik bilgisi durumu (gizli değer gösterilmez)")
+    st.set_defaults(func=_storage_status)
+    cc = storage_sub.add_parser("configure-cloud", help="R2 uç noktası ve kovası (gizli değer değil); etkin depo değişmez")
+    cc.add_argument("--endpoint", required=True, help="https://<hesap>.r2.cloudflarestorage.com")
+    cc.add_argument("--bucket", required=True)
+    cc.add_argument("--profile", default="default")
+    cc.set_defaults(func=_storage_configure_cloud)
+    cr = storage_sub.add_parser("credentials", help="Kimlik bilgisini OS kimlik deposuna yaz / sil (değerler yankısız sorulur)")
+    cr.add_argument("action", choices=["set", "clear"])
+    cr.add_argument("--role", required=True, choices=["uploader", "publisher"])
+    cr.add_argument("--profile", default=None)
+    cr.add_argument("--allow-non-tty", action="store_true", help=argparse.SUPPRESS)
+    cr.set_defaults(func=_storage_credentials)
+    sm = storage_sub.add_parser("smoke-test", help="CANLI R2 duman testi (sentetik veri; açık onay gerekir)")
+    sm.add_argument("--role", default="publisher", choices=["uploader", "publisher"])
+    sm.add_argument("--confirm-live", action="store_true")
+    sm.set_defaults(func=_storage_smoke_test)
 
     args = parser.parse_args(argv)
     return args.func(args)

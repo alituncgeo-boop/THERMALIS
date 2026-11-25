@@ -312,8 +312,7 @@ def metadata_completeness(record: dict[str, Any], quality: dict[str, Any],
 
 
 def _version_dirs(data_root: Path) -> list[Path]:
-    root = catalog.data_dir(data_root) / "datasets"
-    return sorted(p.parent for p in root.rglob("version.json")) if root.is_dir() else []
+    return catalog.version_record_folders(data_root)
 
 
 def _registered_fingerprint(folder: Path, record: dict[str, Any]) -> tuple[str | None, str]:

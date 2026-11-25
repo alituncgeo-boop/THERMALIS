@@ -26,7 +26,7 @@ from typing import Any
 from .. import __version__
 from ..storage import read_json, write_json_atomic
 from . import catalog
-from .integrity import ManifestEntry, is_ephemeral, sha256_file, verify_tree
+from .integrity import ManifestEntry, is_ephemeral, sha256_file, verify_store, verify_tree
 from .report import render_report
 from .transfer_package import (
     UNHASHED_PACKAGE_FILES,
@@ -555,7 +555,9 @@ def verify_registered(data_root: Path, dataset_id: str, version: str) -> list[Ch
     record = read_json(folder / "version.json")
     integrity = read_json(folder / "integrity.json")
     entries = [ManifestEntry(f["path"], f["bytes"], f["sha256"]) for f in integrity["files"]]
-    result = verify_tree(folder / "payload", entries, ignore=set(UNHASHED_PACKAGE_FILES))
+    # Kayıtlı sürümün yeniden doğrulaması depo arayüzü üzerinden: aynı denetim ileride bulut arka ucunda da çalışır.
+    result = verify_store(catalog.release_store(data_root), catalog.version_prefix(dataset_id, version) + "payload/",
+                          entries, ignore=set(UNHASHED_PACKAGE_FILES))
     checks = [Check("INT-03", "SHA-256 doğrulaması", PASS if result.passed else FAIL, f"{result.checked} dosya {result.problems[:10]}")]
     for source in record["storage"]["vector_sources"]:
         info = inspect_vector(folder / source)

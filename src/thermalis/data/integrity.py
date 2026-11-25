@@ -47,6 +47,36 @@ class IntegrityResult:
         }
 
 
+def verify_store(store, prefix: str, entries: list[ManifestEntry], ignore: set[str] = frozenset()) -> IntegrityResult:
+    """:func:`verify_tree` ile aynı denetim, ancak bir nesne deposu öneki üzerinde (arka uçtan bağımsız).
+
+    Her girdi için varlık, boyut ve **tam** SHA-256 (nesne baştan sona okunur); ardından manifestte
+    olmayan nesneler ``UNEXPECTED_FILE`` olarak raporlanır. Sonuç biçimi ``verify_tree`` ile birebir aynıdır.
+    """
+    from ..objectstore.errors import InvalidKey
+
+    result = IntegrityResult()
+    expected = {e.path: e for e in entries}
+    for entry in entries:
+        result.checked += 1
+        try:
+            info = store.head(prefix + entry.path)
+        except InvalidKey:
+            result.problems.append((entry.path, "INVALID_KEY"))
+            continue
+        if info is None:
+            result.problems.append((entry.path, "MISSING"))
+        elif info.size != entry.bytes:
+            result.problems.append((entry.path, "SIZE_MISMATCH"))
+        elif not store.verify_object(prefix + entry.path, entry.sha256, expected_size=entry.bytes).ok:
+            result.problems.append((entry.path, "SHA256_MISMATCH"))
+    for info in store.list(prefix):
+        rel = info.key[len(prefix):]
+        if rel not in expected and rel not in ignore and not is_ephemeral(Path(rel)):
+            result.problems.append((rel, "UNEXPECTED_FILE"))
+    return result
+
+
 def verify_tree(root: Path, entries: list[ManifestEntry], ignore: set[str] = frozenset()) -> IntegrityResult:
     """Her dosyanın varlığını, boyutunu ve SHA-256'sını denetler; beklenmeyen dosyaları raporlar."""
     result = IntegrityResult()

@@ -14,6 +14,7 @@ from conftest import build_package, write_manifest
 from thermalis.data import catalog
 from thermalis.data.adapters import classify_paths, support_matrix
 from thermalis.data.catalog_index import (
+    version_sort_key,
     finding_summary,
     query_assets,
     query_completeness,
@@ -137,8 +138,10 @@ def test_new_version_keeps_prior_version_intact(incoming: Path, data_root: Path,
     assert _tree(v1) == before
     versions = query_versions(data_root, DATASET)
     assert sorted(v["version"] for v in versions) == ["1.0.0", "1.0.0-rc1"]
-    # Sıra kayıt zamanına göredir; iki kayıt aynı saniyeye düşebilir, o zaman sürüm adı belirler.
-    assert versions == sorted(versions, key=lambda v: (v["registered_at"], v["version"]))
+    # Sıra kayıt zamanına göredir; iki kayıt aynı saniyeye düşebilir, o zaman SemVer önceliği belirler
+    # (PR #8: metin sırası '1.0.0' < '1.0.0-rc1' yanlıştır). rc1 önce kaydedildi ve SemVer'de de öncedir.
+    assert [v["version"] for v in versions] == ["1.0.0-rc1", "1.0.0"]
+    assert versions == sorted(versions, key=lambda v: (v["registered_at"], version_sort_key(v["version"])))
     assert query_versions(data_root, DATASET) == versions
     assert json.loads((v1.parent / "dataset.json").read_text(encoding="utf-8"))["versions"] == ["1.0.0", "1.0.0-rc1"]
 

@@ -95,6 +95,33 @@ export function latestRegistered(items: CatalogItem[]): CatalogItem | null {
   return items.reduce<CatalogItem | null>((best, i) => (i.registered_at && (!best || (best.registered_at ?? "") < i.registered_at) ? i : best), null);
 }
 
+/** İkili birimlerle bayt (yerel sayı biçimi yalnız görüntüde). Bilinmeyen değer null döner (uydurulmaz). */
+export function formatBytes(value: number | null | undefined, locale = "tr-TR"): string | null {
+  if (isMissing(value) || !Number.isFinite(value as number) || (value as number) < 0) return null;
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let n = value as number;
+  let unit = 0;
+  while (n >= 1024 && unit < units.length - 1) {
+    n /= 1024;
+    unit += 1;
+  }
+  return `${n.toLocaleString(locale, { maximumFractionDigits: unit === 0 ? 0 : 1 })} ${units[unit]}`;
+}
+
+/** Yüzde (0–100, tam sayı). Toplam bilinmiyor veya sıfırsa null: ilerleme uydurulmaz. */
+export function percent(done: number | null | undefined, total: number | null | undefined): number | null {
+  if (isMissing(done) || isMissing(total) || !(total as number)) return null;
+  return Math.max(0, Math.min(100, Math.round(((done as number) / (total as number)) * 100)));
+}
+
+/** Bulut bağlantısı durumu → görsel ton. Bilinmeyen durum "muted" kalır. */
+export function connectionTone(result: string | null | undefined): "ok" | "warn" | "bad" | "muted" {
+  if (result === "ok") return "ok";
+  if (result === "offline" || result === "busy") return "warn";
+  if (result === "error" || result === "credentials_missing") return "bad";
+  return "muted";
+}
+
 /** Dışa aktarılan değerler ve görünen değerler: yok = null; sıfır ve boş metin farklıdır. */
 export function isMissing(value: unknown): boolean {
   return value === null || value === undefined || value === "";

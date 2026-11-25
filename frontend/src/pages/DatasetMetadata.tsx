@@ -4,7 +4,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { api, errorKey, type DatasetMetadata, type SemanticDictionary, type SemanticField, type SemanticVerification, type SessionStatus } from "../api";
 import { PageHeader } from "../components/Layout";
 import { RequireProject } from "../components/projects";
-import { AccessBadge, QualityPill, useDataFormat } from "./DataCatalog";
+import { AccessBadge, QualityPill, StorageBadge, useDataFormat } from "./DataCatalog";
 
 type Row = Record<string, unknown>;
 
@@ -311,6 +311,7 @@ export function DatasetMetadataPage() {
             [t("data.detail.package_version"), <span className="mono">{v(identity.package_version, f.unknown)}</span>],
             [t("data.meta.content_id"), <span className="mono break">{v(identity.content_id, f.unknown)}</span>],
             [t("data.meta.content_source"), v(identity.content_source, f.unknown)],
+            [t("data.storage.location"), <StorageBadge storage={item.storage} />],
             [t("data.meta.package_id"), <span className="mono">{v(identity.package_id)}</span>],
             [t("data.meta.fingerprint"), <span className="mono break">{v(identity.package_fingerprint, f.unknown)}</span>],
             [t("data.meta.ingest_id"), <span className="mono">{v(identity.ingest_id)}</span>],

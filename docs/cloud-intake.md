@@ -37,15 +37,27 @@ Normal bir R2 API anahtarı **önek (prefix) kısıtlaması yapamaz**: kovaya "O
 
 | Kova | Amaç | Erişim |
 |---|---|---|
-| `thermalis-data-dev` | yayınlar, katalog, durum | yalnız **publisher** anahtarı (bu bilgisayar) |
-| `thermalis-intake-dev` (yeni) | ikinci bilgisayarın yüklediği paketler | **uploader** anahtarı (yalnız bu kova) + publisher (okuma) |
+| `thermalis-data-dev` | yayınlar, katalog, talep/durum kayıtları | yalnız **publisher** anahtarı (bu bilgisayar) |
+| `thermalis-intake-dev` (yeni) | ikinci bilgisayarın yüklediği paketler | **uploader** anahtarı (yalnız bu kova) + publisher |
 
 1. R2 → *Create bucket* → `thermalis-intake-dev` (Standard, public access KAPALI).
-2. *Manage R2 API Tokens* → yeni token "uploader": Object Read & Write, **yalnız** `thermalis-intake-dev`.
-3. Publisher token'ının kapsamına `thermalis-intake-dev` eklenir (okuma yeterli; mevcut token yeniden oluşturulabilir).
-4. Önerilen yaşam döngüsü kuralları (uygulama hiçbir şey silmez):
-   - `thermalis-intake-dev`: `incoming/` → 30 gün sonra sil (kabul edilen paketlerin kalıcı kopyası `releases/`'tedir).
-   - `thermalis-data-dev`: `smoke-tests/` ve `e2e-tests/` → 1 gün sonra sil.
+2. *Manage R2 API Tokens* → yeni token "uploader": **Object Read & Write**, **yalnız** `thermalis-intake-dev`.
+3. Publisher token'ı: **Object Read & Write**, kapsam `thermalis-data-dev` **ve** `thermalis-intake-dev`.
+   - Talep (claim), kabul/red durumu, katalog girdisi ve yayınlar yalnız `thermalis-data-dev`'e yazılır; yayımlayıcı
+     kabul kovasına hiçbir şey yazmaz (salt okunur sarmalayıcıyla doğrulandı). Ancak R2 token'ında izin düzeyi
+     seçilen tüm kovalar için tektir ve uygulama rol başına tek kimlik bilgisi kullanır; bu yüzden publisher token'ı
+     iki kovada da Read & Write olarak verilir (salt okunur ayrı bir token desteklenmez).
+4. **Yaşam döngüsü (lifecycle) kuralları — dikkat:**
+   - `thermalis-intake-dev` → `incoming/` için **yaşa göre silme kuralı KOYMAYIN.** Bulut kabulü kapalıyken,
+     ertelenen (alan, yol sınırı) veya henüz işlenmemiş bir paket, kabul edilmeden önce sessizce silinebilirdi.
+     R2 kurallarında yalnız önek + yaş vardır; "kabul edildi" durumuna göre ayrım yapılamaz. Kabul edilmiş paketlerin
+     temizliği ileride ayrı ve onaylı bir işlemle yapılacaktır.
+   - R2 yeni kovalarda **yarım çok parçalı yüklemeleri 7 gün sonra iptal eden** varsayılan bir kural oluşturur
+     (panoda *Object lifecycle rules* altında kontrol edin). Bu kural tamamlanmış hiçbir nesneyi silmez; kesilmiş
+     bir yüklemenin yalnız yarım parçalarını kaldırır. Yükleyici bunu algılar ve aynı komutla dosyayı baştan gönderir
+     (doğrulandı; veri kaybı yok, yalnız yeniden aktarım). İsterseniz süreyi uzatabilir veya kaldırabilirsiniz.
+   - `thermalis-data-dev` → yalnız `smoke-tests/` ve `e2e-tests/` önekleri için 1 gün sonra silme kuralı güvenlidir.
+     `releases/`, `catalog/`, `state/` öneklerine **hiçbir silme kuralı koymayın.**
 5. **Bucket Lock** kurulmadı; kalıcı saklama kuralı veri sahibinin onayıyla ayrıca denenmelidir.
 
 Tek kova ile de çalışır (ayar boş bırakılırsa), ancak bu durumda yalıtım yazılım düzeyindedir, anahtar düzeyinde değildir.
@@ -54,6 +66,7 @@ Bu bilgisayarda (ayrı kova kullanılıyorsa):
 
 ```
 pixi run storage configure-cloud --endpoint https://<HESAP>.r2.cloudflarestorage.com --bucket thermalis-data-dev --intake-bucket thermalis-intake-dev
+pixi run storage credentials set --role publisher     # yalnız token değiştiyse (iki kovayı kapsayan yeni token)
 pixi run storage cloud-intake on --interval 300
 ```
 

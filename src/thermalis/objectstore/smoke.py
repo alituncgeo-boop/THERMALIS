@@ -17,51 +17,12 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO, Iterator
-
-from .base import ObjectInfo, ObjectStore
+from .base import ObjectStore
 from .errors import AlreadyExists, PreconditionFailed, StorageError
+from .prefixed import PrefixedStore
 from .publication import COMMIT_NAME, PublicationPolicy, ReleaseFile, committed_releases, inspect_release, publish_release
 
 LIVE_ENV = "THERMALIS_R2_LIVE_TEST"
-
-
-class PrefixedStore(ObjectStore):
-    """Tüm anahtarları sabit bir önek altına alan sarmalayıcı (duman testinin yalıtımı için)."""
-
-    def __init__(self, inner: ObjectStore, prefix: str) -> None:
-        self.inner, self.prefix = inner, prefix
-
-    @property
-    def capabilities(self):
-        return self.inner.capabilities
-
-    def _k(self, key: str) -> str:
-        return self.prefix + key
-
-    def _strip(self, info: ObjectInfo | None) -> ObjectInfo | None:
-        if info is None:
-            return None
-        return ObjectInfo(info.key[len(self.prefix):], info.size, info.etag, info.last_modified, info.sha256, info.operation_id, info.metadata)
-
-    def head(self, key):
-        return self._strip(self.inner.head(self._k(key)))
-
-    def list(self, prefix: str = "", *, page_size: int = 1000) -> Iterator[ObjectInfo]:
-        for info in self.inner.list(self.prefix + prefix, page_size=page_size):
-            yield self._strip(info)
-
-    def open_read(self, key) -> BinaryIO:
-        return self.inner.open_read(self._k(key))
-
-    def read_range(self, key, start, end):
-        return self.inner.read_range(self._k(key), start, end)
-
-    def put_bytes(self, key, data, **kw):
-        return self._strip(self.inner.put_bytes(self._k(key), data, **kw))
-
-    def upload_file(self, key, path, **kw):
-        return self._strip(self.inner.upload_file(self._k(key), path, **kw))
 
 
 @dataclass

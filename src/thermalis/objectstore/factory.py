@@ -34,14 +34,22 @@ def object_cache(settings: Settings) -> ObjectCache:
     return ObjectCache(root, settings.cache.max_bytes, protected_roots=protected_roots(settings))
 
 
-def cloud_store(settings: Settings, role: str) -> S3Backend:
+def staging_root(settings: Settings) -> Path:
+    from platformdirs import user_cache_dir
+
+    return Path(settings.cloud_intake.staging_dir) if settings.cloud_intake.staging_dir else \
+        Path(user_cache_dir("THERMALIS", appauthor=False)) / "staging"
+
+
+def cloud_store(settings: Settings, role: str, *, bucket: str | None = None) -> S3Backend:
     cloud = settings.cloud
-    if not cloud.endpoint or not cloud.bucket:
+    bucket = bucket or cloud.bucket
+    if not cloud.endpoint or not bucket:
         raise CredentialsMissing("cloud_endpoint_or_bucket_not_configured")
     install_log_redaction()
     credential = load_credential(cloud.credential_profile, role)
     client = make_client(cloud.endpoint, credential, region=cloud.region, connect_timeout=cloud.connect_timeout_seconds,
                          read_timeout=cloud.read_timeout_seconds)
-    return S3Backend(client, cloud.bucket, retry=RetryPolicy(max_attempts=cloud.max_attempts),
+    return S3Backend(client, bucket, retry=RetryPolicy(max_attempts=cloud.max_attempts),
                      state_store=UploadStateStore(upload_state_dir()), part_size=cloud.multipart_part_size_mib * MIB,
                      multipart_threshold=cloud.multipart_part_size_mib * MIB)

@@ -38,7 +38,7 @@ from . import catalog, semantics
 from .integrity import sha256_file
 
 INDEX_FILE = "catalog_index.sqlite"
-INDEX_SCHEMA_VERSION = "2.0"  # 2.0: layer_versions, package_layers, metadata_conflicts
+INDEX_SCHEMA_VERSION = "2.1"  # 2.0: layer_versions, package_layers, metadata_conflicts · 2.1: storage_locations (bulut)
 
 
 _SEMVER = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
@@ -58,7 +58,7 @@ def version_sort_key(version: str | None) -> tuple:
     return (0, int(m.group(1)), int(m.group(2)), int(m.group(3)), pre_key)
 # Kayıt yapısı sorun kodları (frontend: data.meta.issue.<kod> ve data.meta.issue_detail.<kod>; test kontrol eder).
 RECORD_ISSUE_CODES = ("DUPLICATE_EXCEPTION_ID", "LAYER_STATUS_COUNTED_AS_EXCEPTION", "FINDING_ORIGIN_NOT_RECORDED",
-                      "PACKAGE_FINGERPRINT_NOT_RECORDED", "RECORD_FILES_WRITABLE")
+                      "PACKAGE_FINGERPRINT_NOT_RECORDED", "RECORD_FILES_WRITABLE", "DUPLICATE_ACROSS_BACKENDS")
 REGISTER_SOURCE_SUFFIX = "EXCEPTION_REGISTER.csv"
 
 SCHEMA = """
@@ -106,6 +106,10 @@ CREATE TABLE layer_versions(
 CREATE TABLE package_layers(
   package_dataset_id TEXT, package_version TEXT, layer_name TEXT, layer_dataset_id TEXT, dataset_version TEXT,
   content_id TEXT, change TEXT, PRIMARY KEY(package_dataset_id, package_version, layer_name));
+CREATE TABLE storage_locations(
+  dataset_id TEXT, version TEXT, backend TEXT, provider TEXT, bucket TEXT, namespace TEXT, prefix TEXT,
+  committed_at TEXT, commit_operation TEXT, object_count INTEGER, total_bytes INTEGER, synced_at TEXT, record_dir TEXT,
+  PRIMARY KEY(dataset_id, version));
 CREATE TABLE metadata_conflicts(
   dataset_id TEXT, version TEXT, kind TEXT, subject TEXT, item TEXT, authoritative_value TEXT, authoritative_source TEXT,
   other_value TEXT, other_source TEXT, issue TEXT);
@@ -596,7 +600,8 @@ def _facts_for(data_root: Path, folder: Path, record: dict[str, Any], cache: dic
     facts = {}
     for name, layer in layers.items():
         source = layer.get("source")
-        if source:
+        # Bulut yansısında veri dosyaları yoktur: kimlik hesaplanamaz → bilinmiyor (uydurulmaz).
+        if source and (folder / "payload" / source).exists():
             facts[name] = layer_facts(folder / "payload" / source, name)
     cache[key] = {"package_fingerprint": fingerprint, "layers": facts, "computed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
     cache["_dirty"] = True
@@ -653,6 +658,7 @@ def rebuild_index(data_root: Path) -> Path:
             cache_path = catalog.data_dir(data_root) / FACTS_CACHE
             cache = _read(cache_path) if cache_path.is_file() else {}
             collected = []
+            local_keys: set[tuple[str, str]] = set()
             for folder in _version_dirs(data_root):
                 entries = _index_version(con, folder)
                 if entries is not None:
@@ -660,6 +666,33 @@ def rebuild_index(data_root: Path) -> Path:
                     facts, source = _facts_for(data_root, folder, rec, cache)
                     collected.append({"registered_at": rec["registration"].get("registered_at") or "", "version": rec["version"],
                                       "dataset_id": rec["dataset_id"], "entries": entries, "facts": facts, "facts_source": source})
+                    local_keys.add((rec["dataset_id"], rec["version"]))
+                    integ = _read(folder / "integrity.json")
+                    con.execute("INSERT INTO storage_locations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                (rec["dataset_id"], rec["version"], "local", None, None, None,
+                                 catalog.version_prefix(rec["dataset_id"], rec["version"]), rec["registration"].get("registered_at"),
+                                 rec["registration"].get("ingest_id"), integ.get("file_count"), integ.get("total_bytes"), None, str(folder)))
+            # Bulut sürümleri: yalnız işaretli ve yerelde yansıtılmış kayıtlar. Aynı sürüm iki depoda indekslenmez.
+            from ..cloud.catalog_sync import LOCATION_NAME, cloud_record_folders
+
+            for folder in cloud_record_folders(data_root):
+                rec = _read(folder / "version.json")
+                key = (rec.get("dataset_id"), rec.get("version"))
+                if key in local_keys:
+                    con.execute("INSERT INTO record_issues VALUES (?,?,?,?,?)",
+                                (key[0], key[1], "DUPLICATE_ACROSS_BACKENDS", "r2", str(folder)))
+                    continue
+                entries = _index_version(con, folder)
+                if entries is None:
+                    continue
+                facts, source = _facts_for(data_root, folder, rec, cache)
+                collected.append({"registered_at": rec["registration"].get("registered_at") or "", "version": rec["version"],
+                                  "dataset_id": rec["dataset_id"], "entries": entries, "facts": facts, "facts_source": source})
+                loc = _read(folder / LOCATION_NAME)
+                con.execute("INSERT INTO storage_locations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (key[0], key[1], "r2", loc.get("provider"), loc.get("bucket"), loc.get("namespace"),
+                             loc.get("release_prefix"), loc.get("committed_at"), loc.get("operation_id"), loc.get("object_count"),
+                             loc.get("total_bytes"), loc.get("synced_at"), str(folder)))
             if cache.pop("_dirty", False):
                 write_json_atomic(cache_path, cache)
             mapping = _index_layer_versions(con, collected)
@@ -667,6 +700,13 @@ def rebuild_index(data_root: Path) -> Path:
             for dataset_file in sorted((catalog.data_dir(data_root) / "datasets").rglob("dataset.json")) if (catalog.data_dir(data_root) / "datasets").is_dir() else []:
                 d = _read(dataset_file)
                 con.execute("UPDATE datasets SET latest_registered=? WHERE dataset_id=?", (d.get("latest_registered"), d.get("dataset_id")))
+            # Yalnız bulutta bulunan veri setleri: son sürüm kayıt sırası + SemVer önceliğiyle belirlenir.
+            missing_latest = [r[0] for r in con.execute("SELECT dataset_id FROM datasets WHERE kind='dataset' AND latest_registered IS NULL")]
+            for ds in missing_latest:
+                rows = con.execute("SELECT version, registered_at FROM dataset_versions WHERE dataset_id=?", (ds,)).fetchall()
+                if rows:
+                    latest = max(rows, key=lambda r: (r[1] or "", version_sort_key(r[0])))[0]
+                    con.execute("UPDATE datasets SET latest_registered=? WHERE dataset_id=?", (latest, ds))
             _index_runs(con, data_root)
             con.commit()
         for attempt in range(20):  # Windows: okuyan bir bağlantı açıkken yer değiştirme kısa süre reddedilebilir
@@ -681,6 +721,17 @@ def rebuild_index(data_root: Path) -> Path:
         Path(tmp).unlink(missing_ok=True)
         raise
     return target
+
+
+def record_folder(data_root: Path, dataset_id: str, version: str) -> Path | None:
+    """Bir sürümün kayıt klasörü (yerel sürüm klasörü veya bulut kaydının yerel yansısı)."""
+    row = _query(data_root, "SELECT record_dir FROM dataset_versions WHERE dataset_id=? AND version=?", (dataset_id, version))
+    return Path(row[0]["record_dir"]) if row and row[0]["record_dir"] else None
+
+
+def storage_location(data_root: Path, dataset_id: str, version: str) -> dict[str, Any] | None:
+    rows = _query(data_root, "SELECT * FROM storage_locations WHERE dataset_id=? AND version=?", (dataset_id, version))
+    return rows[0] if rows else None
 
 
 def _index_schema(path: Path) -> str | None:

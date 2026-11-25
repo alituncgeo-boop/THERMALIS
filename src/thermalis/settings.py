@@ -29,6 +29,11 @@ class CloudSettings(BaseModel):
     provider: Literal["r2"] = "r2"
     endpoint: str | None = None
     bucket: str | None = None
+    # İsteğe bağlı ayrı kabul kovası: ikinci bilgisayarın anahtarı YALNIZ bu kovaya yetkilendirilir
+    # (normal R2 anahtarı önek kısıtlaması yapamaz; gerçek yalıtım ayrı kovayla sağlanır).
+    intake_bucket: str | None = None
+    # Tüm anahtarların altına konduğu ad alanı (boş = kök). Testlerin üretim kayıtlarından yalıtımı için.
+    namespace: str = Field(default="", pattern=r"^$|^([A-Za-z0-9][A-Za-z0-9._-]*/)+$")
     region: str = "auto"
     credential_profile: str = Field(default="default", pattern=r"^[a-z0-9][a-z0-9-]{0,31}$")
     connect_timeout_seconds: float = Field(default=10.0, ge=1, le=120)
@@ -42,6 +47,17 @@ class CacheSettings(BaseModel):
 
     cache_dir: str | None = None
     max_bytes: int = Field(default=20 * 1024 ** 3, ge=1024 * 1024)
+
+
+class CloudIntakeSettings(BaseModel):
+    """Buluttaki hazır paketlerin kabulü. Varsayılan KAPALI; açmak etkin depoyu değiştirmez."""
+
+    enabled: bool = False
+    interval_seconds: int = Field(default=300, ge=60, le=86400)  # R2 istek maliyetini sınırlar
+    max_packages_per_scan: int = Field(default=2, ge=1, le=20)
+    staging_dir: str | None = None  # boşsa kullanıcı önbellek klasörü altında; önbellek sınırından ayrı sayılır
+    staging_max_bytes: int = Field(default=200 * 1024 ** 3, ge=1024 * 1024)
+    claim_ttl_hours: float = Field(default=12.0, ge=0.01, le=720)
 
 
 class Settings(BaseModel):
@@ -60,6 +76,7 @@ class Settings(BaseModel):
     storage_backend: Literal["local"] = "local"
     cloud: CloudSettings = Field(default_factory=CloudSettings)
     cache: CacheSettings = Field(default_factory=CacheSettings)
+    cloud_intake: CloudIntakeSettings = Field(default_factory=CloudIntakeSettings)
 
 
 def config_dir() -> Path:

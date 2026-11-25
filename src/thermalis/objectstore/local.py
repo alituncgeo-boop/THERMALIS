@@ -262,7 +262,8 @@ class LocalBackend(ObjectStore):
             tmp.unlink(missing_ok=True)
 
     def upload_file(self, key: str, path: Path, *, expected_sha256: str, operation_id: str,
-                    metadata: dict[str, str] | None = None, cancel: CancelToken | None = None) -> ObjectInfo:
+                    metadata: dict[str, str] | None = None, cancel: CancelToken | None = None,
+                    progress=None, source_verified: bool = False) -> ObjectInfo:
         """Yerel "çok parçalı" yükleme: parça parça kopya + kopya sırasında SHA-256 + yalnız-oluştur yayın."""
         import hashlib
 
@@ -278,6 +279,8 @@ class LocalBackend(ObjectStore):
                         cancel.raise_if_cancelled(key)
                     digest.update(block)
                     dst.write(block)
+                    if progress is not None:
+                        progress(len(block))
                 dst.flush()
                 os.fsync(dst.fileno())
             if digest.hexdigest() != expected_sha256:

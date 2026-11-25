@@ -72,6 +72,7 @@
     "verification_log_broken": "Doğrulama günlüğü bütünlük denetiminden geçmedi; incelenene kadar yeni doğrulama yazılmaz.",
     "verification_log_busy": "Doğrulama günlüğü kullanımda. Birazdan yeniden deneyin.",
     "session_code_invalid": "Oturum kodu geçersiz veya süresi dolmuş.",
+    "cloud_unavailable": "Bulut deposuna ulaşılamadı veya kimlik bilgisi yok; işlem yapılmadı.",
     "validation": "Girilen bilgiler geçersiz.",
     "network": "Sunucuya ulaşılamadı. THERMALIS çalışıyor mu?",
     "unknown": "Beklenmeyen bir hata oluştu."
@@ -188,6 +189,44 @@
       "accepted": "Paket alındı. Durumunu veri kabul panelinden izleyebilirsiniz.",
       "select_first": "Önce bir veri seti seçin"
     },
+    "storage": {
+      "title": "Depolama",
+      "location": "Depolama yeri",
+      "location_local": "Bu bilgisayardaki yerel veri kökü",
+      "location_r2": "Cloudflare R2 · kova {{bucket}} (doğrulanmış commit işareti)",
+      "committed_line": "işaretlendi {{at}} · {{size}}",
+      "backend": { "local": "Yerel", "r2": "Bulut (R2)" },
+      "provider": { "r2": "Cloudflare R2" },
+      "provider_line": "{{provider}} · kova {{bucket}}",
+      "active_backend": "etkin depo: {{backend}}",
+      "connection": {
+        "ok": "bağlı",
+        "offline": "bağlantı yok",
+        "error": "hata",
+        "busy": "başka tarama sürüyor",
+        "credentials_missing": "kimlik bilgisi yok",
+        "not_configured": "yapılandırılmadı",
+        "disabled": "bulut kabulü kapalı",
+        "pending": "henüz taranmadı"
+      },
+      "error": {
+        "credentials_missing": "Yayımlayıcı kimlik bilgisi Windows Credential Manager'da yok.",
+        "transient_error": "Geçici ağ hatası; sonraki taramada yeniden denenir.",
+        "access_denied": "Erişim reddedildi; anahtarın kova yetkisini kontrol edin."
+      },
+      "cloud_datasets": "Bulut sürümleri",
+      "committed_volume": "İşaretli hacim",
+      "cache": "Önbellek",
+      "sync_now": "Şimdi eşitle",
+      "sync_disabled": "Bulut kabulü ayarlarda kapalı",
+      "last_sync": "son başarılı eşitleme: {{at}}",
+      "never": "hiç",
+      "credentials_line": "kimlik bilgisi — yükleyici: {{uploader}}, yayımlayıcı: {{publisher}}",
+      "present": "var",
+      "absent": "yok",
+      "catalog_derived_note": "Katalogdan türetilmiş (commit işaretlerindeki nesne boyutları); sağlayıcının fatura ölçümü değildir.",
+      "sync_problems": "{{count}} eşitleme sorunu (işaretsiz veya doğrulanamayan kayıtlar kataloğa alınmadı)"
+    },
     "intake": {
       "title": "Veri kabul",
       "watch_off": "Otomatik klasör izleme kapalı (Ayarlar)",
@@ -199,6 +238,7 @@
       "no_integration": "Henüz entegrasyon yok",
       "ignored_line": "Paket protokolü dışında {{count}} girdi (başarısızlık değildir; paketlere bakın)",
       "manual": "elle",
+      "cloud": "bulut",
       "retry": "Yeniden dene",
       "stat": {
         "registered": "Veri seti",
@@ -232,7 +272,28 @@
         "authorization_statement_missing": "Yetki beyanı olmayan kısıtlı veri; kullanıcı kararı gerekli.",
         "access_classification_unknown": "Paket erişim sınıfını beyan etmiyor; kullanıcı kararı gerekli.",
         "check_failed": "Bir kayıt denetimi başarısız; ayrıntıya ve entegrasyon raporuna bakın.",
-        "unexpected": "Beklenmeyen hata; yarım kayıt bırakılmadı."
+        "cloud_offline": "Bulut bağlantısı kesildi; paket bir sonraki taramada sürer (doğrulanmış dosyalar korunur).",
+        "insufficient_staging_space": "Ertelendi: hazırlık alanı veya diskte boş alan yetersiz. Reddedilmedi; daha sonra yeniden denenir.",
+        "DOWNLOADING": "Buluttan indiriliyor ve SHA-256 doğrulanıyor.",
+        "PUBLISHING": "Yayın: yükleme, tam geri okuma doğrulaması, ardından commit işareti.",
+        "marker_invalid": "Tamamlanma işareti (THERMALIS_READY.json) geçersiz; paket işlenmez.",
+        "authorization_required": "Bulut depolama yetki kaydı olmayan kısıtlı veri; kabul edilmez.",
+        "authorization_schema_invalid": "Yetki kaydı gerekli şemaya uymuyor.",
+        "authorization_fields_missing": "Yetki kaydında zorunlu alanlar eksik.",
+        "authorization_does_not_match_package": "Yetki kaydı başka bir pakete, sürüme veya manifeste ait.",
+        "authorization_scope_missing_cloud_storage": "Yetki kaydı bulut depolamayı kapsamıyor.",
+        "authorization_storage_mismatch": "Yetki kaydı başka bir sağlayıcı veya kova belirtiyor.",
+        "authorization_not_yet_valid": "Yetki kaydı henüz geçerli değil.",
+        "authorization_expired": "Yetki kaydının süresi dolmuş.",
+        "authorization_invalid_time": "Yetki kaydında geçersiz tarih var.",
+        "authorization_unreadable": "Yetki kaydı okunamadı.",
+        "ALREADY_REGISTERED_LOCALLY": "Bu sürüm yerelde zaten kayıtlı; bulutta yinelenmez (taşıma ayrı ve onaylı bir adımdır).",
+        "sha256_mismatch": "İndirilen bir dosyanın SHA-256 değeri uyuşmuyor; paket reddedildi.",
+        "package_object_missing": "Tamamlanma işaretinde listelenen bir dosya bulutta yok.",
+        "access_class_mismatch": "İşaretteki erişim sınıfı paketin beyanından farklı.",
+        "storage_error": "Depolama hatası; ayrıntıya bakın. Hiçbir şeyin üzerine yazılmadı, hiçbir şey silinmedi.",
+        "staging_path_too_long": "Ertelendi: hazırlık yolları Windows yol sınırını aşacak. Ayarlarda daha kısa bir hazırlık klasörü seçin; paket reddedilmedi.",
+        "unexpected":"Beklenmeyen hata; yarım kayıt bırakılmadı."
       },
       "result": {
         "busy": "başka bir entegrasyon sürüyor",
@@ -403,14 +464,16 @@
         "LAYER_STATUS_COUNTED_AS_EXCEPTION": "Katman durumu istisna olarak sayılmış",
         "FINDING_ORIGIN_NOT_RECORDED": "Bulgu kökeni kaydedilmemiş",
         "PACKAGE_FINGERPRINT_NOT_RECORDED": "Paket parmak izi kaydedilmemiş",
-        "RECORD_FILES_WRITABLE": "Kayıt dosyaları yazılabilir"
+        "RECORD_FILES_WRITABLE": "Kayıt dosyaları yazılabilir",
+        "DUPLICATE_ACROSS_BACKENDS": "Aynı sürüm hem yerelde hem bulutta"
       },
       "issue_detail": {
         "DUPLICATE_EXCEPTION_ID": "{{detail}}",
         "LAYER_STATUS_COUNTED_AS_EXCEPTION": "İstisna listesinde {{detail}} katman durumu kaydı var",
         "FINDING_ORIGIN_NOT_RECORDED": "Köken her kaydın kaynak dosyasından çıkarıldı",
         "PACKAGE_FINGERPRINT_NOT_RECORDED": "{{detail}} üzerinden hesaplandı (eski kayıt)",
-        "RECORD_FILES_WRITABLE": "{{detail}}"
+        "RECORD_FILES_WRITABLE": "{{detail}}",
+        "DUPLICATE_ACROSS_BACKENDS": "Bulut kaydı indekslenmedi; katalogda yerel kayıt kullanılıyor (sürüm iki depoda yinelenmez)."
       },
       "origin": {
         "package_exception_register": "Paket defteri",

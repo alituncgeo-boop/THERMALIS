@@ -1,16 +1,18 @@
 import {
-  AlertTriangle, ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, Download,
-  FileSearch, Layers, Lock, Plus, RefreshCw, Search, ShieldCheck, Upload, X,
+  AlertTriangle, ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Cloud, CloudOff, Copy, Download,
+  FileSearch, HardDrive, Layers, Lock, Plus, RefreshCw, Search, ShieldCheck, Upload, X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
-import { api, errorKey, type CatalogItem, type IntakePackage, type IntakeStatus } from "../api";
+import { api, errorKey, type CatalogItem, type IntakePackage, type IntakeStatus, type StorageLocation, type StorageStatus } from "../api";
 import { EmptyState } from "../components/common";
 import { PageHeader } from "../components/Layout";
 import { RequireProject } from "../components/projects";
 import { useApp } from "../state";
-import { categories, filterCatalog, intakeBuckets, isMissing, latestRegistered, pageOf, sortCatalog, type SortKey } from "./dataModel";
+import {
+  categories, connectionTone, filterCatalog, formatBytes, intakeBuckets, isMissing, latestRegistered, pageOf, percent, sortCatalog, type SortKey,
+} from "./dataModel";
 
 const POLL_MS = 5000;
 const PAGE_SIZE = 25;
@@ -65,6 +67,69 @@ function StateBadge({ state }: { state: string }) {
 }
 
 /** Uzun kimlik: tek satır, gerekirse kısaltılır; tam değer ipucunda ve kopyalanabilir. */
+/** Sürümün depolama yeri: yerel veya bulut (yalnız doğrulanmış commit işareti olan bulut kayıtları katalogdadır). */
+export function StorageBadge({ storage }: { storage?: StorageLocation | null }) {
+  const { t } = useTranslation();
+  const cloud = storage?.backend === "r2";
+  return (
+    <span className={`badge ${cloud ? "badge-cloud" : ""}`} title={cloud ? t("data.storage.location_r2", { bucket: storage?.bucket ?? "—" }) : t("data.storage.location_local")}>
+      {cloud ? <Cloud size={12} aria-hidden /> : <HardDrive size={12} aria-hidden />} {t(cloud ? "data.storage.backend.r2" : "data.storage.backend.local")}
+    </span>
+  );
+}
+
+/* ---------- depolama durumu (bulut + önbellek) ---------- */
+function StorageStrip({ status, onSync, syncing }: { status: StorageStatus | null; onSync: () => void; syncing: boolean }) {
+  const f = useDataFormat();
+  const { t } = f;
+  if (!status) return null;
+  const c = status.cloud;
+  const conn = !c.configured ? "not_configured" : !c.intake_enabled ? "disabled" : c.connection ?? "pending";
+  const tone = connectionTone(conn);
+  const bytes = (n: number | null | undefined) => formatBytes(n, f.locale) ?? f.unknown;
+  const cacheShare = percent(status.cache.usage_bytes, status.cache.max_bytes);
+  return (
+    <section className="panel intake-strip storage-strip" aria-label={t("data.storage.title")}>
+      <div className="intake-row">
+        <div className="intake-source">
+          {tone === "bad" || tone === "warn" ? <CloudOff size={18} aria-hidden /> : <Cloud size={18} aria-hidden />}
+          <div className="intake-source-text">
+            <span className="intake-title">{t("data.storage.title")}</span>
+            <span className="cell-muted">
+              <span className={`conn conn-${tone}`}>{t(`data.storage.connection.${conn}`, { defaultValue: conn })}</span>
+              {" · "}{t("data.storage.provider_line", { provider: t(`data.storage.provider.${c.provider}`, { defaultValue: c.provider }), bucket: c.bucket ?? "—" })}
+              {" · "}{t("data.storage.active_backend", { backend: t(`data.storage.backend.${status.active_backend}`, { defaultValue: status.active_backend }) })}
+            </span>
+            {c.last_error && <span className="form-error small-text">{t(`data.storage.error.${c.last_error}`, { defaultValue: c.last_error })}</span>}
+          </div>
+        </div>
+        <div className="metrics">
+          <Metric label={t("data.storage.cloud_datasets")} value={f.number(status.catalog.cloud_release_count)} tone={status.catalog.cloud_release_count ? undefined : "muted"} />
+          <Metric label={t("data.storage.committed_volume")} value={<span title={t("data.storage.catalog_derived_note")}>{bytes(status.catalog.committed_bytes)}*</span>} />
+          <Metric label={t("data.storage.cache")} value={<span title={cacheShare === null ? undefined : `${cacheShare}%`}>{bytes(status.cache.usage_bytes)} / {bytes(status.cache.max_bytes)}</span>} />
+        </div>
+        <div className="intake-actions">
+          <button type="button" className="ghost-button small-button" onClick={onSync} disabled={!c.configured || !c.intake_enabled || syncing}
+            title={c.intake_enabled ? t("data.storage.sync_now") : t("data.storage.sync_disabled")}>
+            <RefreshCw size={14} aria-hidden /> {t("data.storage.sync_now")}
+          </button>
+        </div>
+      </div>
+      <div className="intake-footnote cell-muted">
+        {t("data.storage.last_sync", { at: status.catalog.last_sync_success_at ? f.date(status.catalog.last_sync_success_at) : t("data.storage.never") })}
+        {" · "}{t("data.storage.credentials_line", {
+          uploader: t(status.cloud.credentials.uploader ? "data.storage.present" : "data.storage.absent"),
+          publisher: t(status.cloud.credentials.publisher ? "data.storage.present" : "data.storage.absent"),
+        })}
+        {" · "}* {t("data.storage.catalog_derived_note")}
+        {status.catalog.last_sync_problems.length > 0 && (
+          <div className="form-error small-text">{t("data.storage.sync_problems", { count: status.catalog.last_sync_problems.length })}</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function IdLine({ value }: { value: string }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
@@ -161,8 +226,19 @@ function IntakeStrip({ intake, items, onScan, onRetry }: { intake: IntakeStatus 
             <tbody>
               {visible.map((p) => (
                 <tr key={p.path}>
-                  <td className="mono small-cell" title={p.path}>{p.name}{p.source === "manual" && <span className="cell-muted"> · {t("data.intake.manual")}</span>}</td>
-                  <td><StateBadge state={p.state} /></td>
+                  <td className="mono small-cell" title={p.source === "cloud" ? undefined : p.path}>
+                    {p.name}
+                    {p.source === "manual" && <span className="cell-muted"> · {t("data.intake.manual")}</span>}
+                    {p.source === "cloud" && <span className="cell-muted"> · <Cloud size={11} aria-hidden /> {t("data.intake.cloud")}</span>}
+                  </td>
+                  <td>
+                    <StateBadge state={p.state} />
+                    {p.reason_code === "DOWNLOADING" && percent(p.bytes_done, p.bytes_total) !== null && (
+                      <div className="meter thin" role="img" aria-label={`${percent(p.bytes_done, p.bytes_total)}%`}>
+                        <span style={{ width: `${percent(p.bytes_done, p.bytes_total)}%` }} />
+                      </div>
+                    )}
+                  </td>
                   <td className="mono small-cell">{p.dataset_id ? `${p.dataset_id} ${p.version ?? ""}` : "—"}</td>
                   <td className="small-cell" title={p.reason || undefined}>
                     {p.reason_code ? t(`data.intake.reason.${p.reason_code}`, { defaultValue: p.reason_code }) : !p.reason && "—"}
@@ -280,6 +356,12 @@ function DetailPanel({ item, onVerified }: { item: CatalogItem; onVerified: () =
             <div className="cell-muted mono ellipsis" title={item.package_id ?? ""}>{f.text(item.package_id, f.unknown)}</div>
           </Fact>
           <Fact label={t("data.detail.registered")}>{f.date(item.registered_at)}</Fact>
+          <Fact label={t("data.storage.location")}>
+            <StorageBadge storage={item.storage} />
+            {item.storage?.backend === "r2" && (
+              <div className="cell-muted">{t("data.storage.committed_line", { at: f.date(item.storage.committed_at), size: formatBytes(item.storage.total_bytes, f.locale) ?? f.unknown })}</div>
+            )}
+          </Fact>
         </Group>
 
         <Group title={t("data.detail.group.source")}>
@@ -388,6 +470,8 @@ export function DataPage() {
   const project = useApp().activeProject?.name ?? "";
   const [items, setItems] = useState<CatalogItem[] | null>(null);
   const [intake, setIntake] = useState<IntakeStatus | null>(null);
+  const [storage, setStorage] = useState<StorageStatus | null>(null);
+  const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -420,6 +504,8 @@ export function DataPage() {
         }
       })
       .catch(() => setIntake(null));
+    // Depolama durumu yerel ve ucuzdur (son bilinen bağlantı durumu); sağlayıcıya istek göndermez.
+    api.storage().then(setStorage).catch(() => setStorage(null));
   }, [loadCatalog]);
 
   useEffect(() => {
@@ -430,6 +516,13 @@ export function DataPage() {
     }, POLL_MS);
     return () => window.clearInterval(timer);
   }, [loadCatalog, loadIntake]);
+
+  function syncNow() {
+    setSyncing(true);
+    api.storageSync()
+      .then(() => window.setTimeout(() => { loadIntake(); loadCatalog(); setSyncing(false); }, 3000))
+      .catch((err) => { setError(errorKey(err)); setSyncing(false); });
+  }
 
   const filtered = useMemo(() => {
     const matched = filterCatalog(items ?? [], query, category, (i) => [f.title(i), f.category(i.category)]);
@@ -491,6 +584,7 @@ export function DataPage() {
         onScan={() => void api.scanNow().then(() => window.setTimeout(loadIntake, 1500))}
         onRetry={(p) => void api.retryPackage(p.path).then(loadIntake).catch((err) => setError(errorKey(err)))}
       />
+      <StorageStrip status={storage} onSync={syncNow} syncing={syncing} />
       {items && items.length === 0 && (
         <div className="panel">
           <EmptyState icon={Layers} accent="var(--c-data)" title={t("pages.data.empty_title")} body={t("data.empty_body")} />
@@ -537,7 +631,10 @@ export function DataPage() {
                         onClick={() => setSelectedId(i.id)} tabIndex={0} onKeyDown={(e) => onRowKey(e, index)}>
                         <td>
                           <div className="cell-strong clamp-2" title={f.title(i)}>{f.title(i)}</div>
-                          <div className="cell-muted ellipsis" title={i.id}>{f.category(i.category)} · <span className="mono">{i.id.split("/").slice(1).join("/")}</span></div>
+                          <div className="cell-muted ellipsis" title={i.id}>
+                            {i.storage?.backend === "r2" && <><Cloud size={11} aria-label={t("data.storage.backend.r2")} /> </>}
+                            {f.category(i.category)} · <span className="mono">{i.id.split("/").slice(1).join("/")}</span>
+                          </div>
                         </td>
                         <td className="mono small-cell" title={i.version}>{i.version}</td>
                         <td><QualityPill status={i.quality_status} /></td>

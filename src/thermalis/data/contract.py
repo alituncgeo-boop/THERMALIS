@@ -130,9 +130,25 @@ def list_versions(data_root: Path, dataset_id: str) -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------- tanımlayıcı
 
 def _physical(data_root: Path, layer: dict[str, Any]) -> tuple[dict[str, Any] | None, Path]:
+    from .catalog_index import record_folder
+
     asset = _one(_query(data_root, "SELECT * FROM assets WHERE asset_id=?", (layer["source_asset_id"],))) if layer["source_asset_id"] else None
-    folder = catalog.version_dir(data_root, layer["dataset_id"], layer["version"])
+    folder = record_folder(data_root, layer["dataset_id"], layer["version"]) or catalog.version_dir(data_root, layer["dataset_id"], layer["version"])
     return asset, folder
+
+
+def storage_block(data_root: Path, dataset_id: str, version: str, asset: dict[str, Any] | None, allowed: bool) -> dict[str, Any]:
+    """Depolama konumu: yerel mi, bulutta mı. Konum ayrıntısı yalnız erişim izni varsa verilir."""
+    from .catalog_index import storage_location
+
+    loc = storage_location(data_root, dataset_id, version) or {"backend": "local"}
+    out: dict[str, Any] = {"backend": loc["backend"], "provider": loc.get("provider"),
+                           "analysis_ready": True, "committed_at": loc.get("committed_at") if loc["backend"] == "r2" else None}
+    if allowed and loc["backend"] == "r2" and asset:
+        key = f"{loc.get('namespace') or ''}{loc['prefix']}payload/{asset['path']}"
+        out.update(bucket=loc.get("bucket"), object_key_prefix=key, gdal_path=f"/vsis3/{loc.get('bucket')}/{key}",
+                   access_note="Bulut nesnesi: okumak için yetkili R2 kimlik bilgisi veya önbellek üzerinden malzemeleştirme gerekir.")
+    return out
 
 
 def _access_conditions(dv: dict[str, Any], meta: dict[str, Any] | None, authorized: bool) -> dict[str, Any]:
@@ -172,6 +188,7 @@ def descriptor(data_root: Path, dataset_id: str, version: str | None = None, *, 
         "package": {"package_id": dv["package_id"], "package_version": ver, "fingerprint_sha256": dv["package_fingerprint"],
                     "fingerprint_source": dv["fingerprint_source"], "role": "origin_of_this_dataset_version"},
         "present_in_packages": layer["present_in_packages"],
+        "storage": storage_block(data_root, ds, ver, asset, allowed),
         "asset": {"asset_id": layer["source_asset_id"], "kind": (asset or {}).get("kind"), "format": fmt,
                   "format_label": ADAPTER_LABELS.get(fmt) if fmt else None, "relative_path": f"payload/{asset['path']}" if asset else None,
                   "layer": layer["layer_name"], "reader": READERS.get(fmt)},
@@ -327,11 +344,14 @@ def access(data_root: Path, dataset_id: str, version: str | None = None, *, auth
     asset, folder = _physical(data_root, layer)
     conditions = _access_conditions(dv, meta, authorized)
     allowed = conditions["physical_access"] == "available"
+    storage = storage_block(data_root, layer["dataset_id"], layer["version"], asset, allowed)
+    local = storage["backend"] == "local"
     return {"contract": CONTRACT, "version_id": version_id(dataset_id, layer["dataset_version"]), "package_version": layer["version"],
             "content_id": layer["content_id"], "asset_id": layer["source_asset_id"], "format": (asset or {}).get("format"), "layer": layer["layer_name"],
             "reader": READERS.get((asset or {}).get("format")), "relative_path": f"payload/{asset['path']}" if asset else None,
-            "absolute_path": str(folder / "payload" / asset["path"]) if (asset and allowed) else None,
-            "read_only": True, "conditions": conditions, "usage_note": USAGE_NOTE}
+            # Bulut sürümünde yerel yol yoktur (uydurulmaz): erişim ``storage`` bloğundadır.
+            "absolute_path": str(folder / "payload" / asset["path"]) if (asset and allowed and local) else None,
+            "storage": storage, "read_only": True, "conditions": conditions, "usage_note": USAGE_NOTE}
 
 
 # --------------------------------------------------------------------------- sürüm farkları

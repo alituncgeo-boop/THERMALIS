@@ -315,6 +315,13 @@ def assess(folder: Path, data_root: Path, settle_seconds: float = DEFAULT_SETTLE
         return candidate("INVALID", f"manifest_file_count_mismatch: beyan {declared}, liste {len(pkg.manifest)}", pkg.dataset_id, pkg.version)
     fp = package_fingerprint(folder)
     existing = catalog.version_dir(data_root, pkg.dataset_id, pkg.version)
+    if not (existing / "version.json").is_file():
+        # Aynı sürüm bulutta işaretlenmişse yerelde ikinci kez kaydedilmez (depolar arası yineleme yok).
+        from ..cloud.catalog_sync import mirror_folder
+
+        cloud = mirror_folder(data_root, pkg.dataset_id, pkg.version)
+        if (cloud / "version.json").is_file():
+            existing = cloud
     if (existing / "version.json").is_file():
         if registered_fingerprint(existing) == fp:
             return candidate("ALREADY_REGISTERED", "aynı paket (MANIFEST SHA-256) zaten kayıtlı", pkg.dataset_id, pkg.version, fp,
@@ -641,6 +648,12 @@ REASON_CODES = (
     "ALREADY_REGISTERED", "ARCHIVE", "SETTLING", "INCOMPLETE", "NOT_A_PACKAGE", "STABILITY_CHECK", "UNSAFE", "INVALID",
     "VERSION_CONFLICT", "INTERRUPTED", "RETRY_REQUESTED", "VALIDATING", "INGESTING", "format_not_supported",
     "authorization_statement_missing", "access_classification_unknown", "check_failed", "unexpected",
+    # Bulut kabulü (cloud/intake.py)
+    "cloud_offline", "insufficient_staging_space", "DOWNLOADING", "PUBLISHING", "marker_invalid", "authorization_required",
+    "authorization_schema_invalid", "authorization_fields_missing", "authorization_does_not_match_package",
+    "authorization_scope_missing_cloud_storage", "authorization_storage_mismatch", "authorization_not_yet_valid",
+    "authorization_expired", "authorization_invalid_time", "authorization_unreadable", "ALREADY_REGISTERED_LOCALLY",
+    "sha256_mismatch", "package_object_missing", "access_class_mismatch", "storage_error", "staging_path_too_long",
 )
 RETRYABLE_STATES = ("BLOCKED", "ADAPTER_REQUIRED", "FAILED")
 IN_FLIGHT_STATES = ("VALIDATING", "INGESTING")
@@ -693,11 +706,19 @@ def _save_intake(data_root: Path, intake: dict[str, Any]) -> None:
     write_json_atomic(intake_path(data_root), intake)
 
 
-def _set_state(intake: dict[str, Any], path: Path, state: str, reason: str = "", reason_code: str = "", **extra: Any) -> dict[str, Any]:
-    """``reason_code`` dilden bağımsız neden kodudur (arayüz çevirir); ``reason`` ayrıntı/kanıt metnidir."""
-    key = str(path)
+def _set_state(intake: dict[str, Any], path: Path | None, state: str, reason: str = "", reason_code: str = "", *,
+               key: str | None = None, name: str | None = None, **extra: Any) -> dict[str, Any]:
+    """``reason_code`` dilden bağımsız neden kodudur (arayüz çevirir); ``reason`` ayrıntı/kanıt metnidir.
+
+    Bulut paketleri yol yerine ``key`` (``r2://<kova>/incoming/<paket>/``) ve ``name`` ile kaydedilir.
+    """
+    key = key or str(path)
     now = _utc_now()
-    entry = intake["packages"].get(key) or {"name": path.name, "path": key, "first_seen": now, "history": []}
+    entry = intake["packages"].get(key) or {"name": name or (path.name if path else key), "path": key, "first_seen": now, "history": []}
+    unchanged = key in intake["packages"] and entry.get("present", True) and all(
+        entry.get(k) == v for k, v in {"state": state, "reason": reason, "reason_code": reason_code, **extra}.items())
+    if unchanged:
+        return entry  # anlamlı değişiklik yok: zaman damgası ve geçmiş güncellenmez (gereksiz yazım/günlük yok)
     if entry.get("state") != state:
         entry["history"] = (entry.get("history", []) + [{"at": now, "state": state, "reason_code": reason_code, "reason": reason}])[-20:]
         entry["state_since"] = now
@@ -776,12 +797,19 @@ def run_ingest(incoming: Path, data_root: Path, *, settle_seconds: float = DEFAU
             candidates = discover(incoming, data_root, settle_seconds)
             if only:
                 candidates = [c for c in candidates if c.path.name == only]
-            log_event(data_root, event="discovery", run_id=run_id, dry_run=dry_run, candidates=[c.as_dict() for c in candidates])
             results: list[IngestResult] = []
             if dry_run:
+                log_event(data_root, event="discovery", run_id=run_id, dry_run=True, candidates=[c.as_dict() for c in candidates])
                 return RunSummary(run_id, candidates, results, recovery)
 
             intake = load_intake(data_root)
+            before = json.dumps(intake, sort_keys=True, ensure_ascii=False)
+            # Anlamlı değişiklik yoksa (aynı paketler, aynı durum ve imzalar) yeni keşif olayı yazılmaz.
+            digest = hashlib.sha256(json.dumps([(c.path.name, c.state, c.signature, c.fingerprint) for c in candidates],
+                                               sort_keys=True).encode("utf-8")).hexdigest()
+            if intake.get("last_discovery_digest") != digest:
+                log_event(data_root, event="discovery", run_id=run_id, dry_run=False, candidates=[c.as_dict() for c in candidates])
+                intake["last_discovery_digest"] = digest
             for key, entry in list(intake["packages"].items()):  # çökme sonrası yarım kalan işlem
                 if entry.get("state") in IN_FLIGHT_STATES:
                     _set_state(intake, Path(key), "DETECTED", f"önceki işlem yarıda kaldı ({entry.get('state')}); yeniden değerlendirilecek", "INTERRUPTED")
@@ -807,7 +835,8 @@ def run_ingest(incoming: Path, data_root: Path, *, settle_seconds: float = DEFAU
                     _set_state(intake, c.path, "READY", "", **extra)
                     to_process.append(c)
                 elif state == "ALREADY_REGISTERED" and prev and prev.get("state") == "REGISTERED":
-                    prev.update(present=True, updated_at=_utc_now())  # kendi kaydettiğimiz paket: REGISTERED kalır
+                    if not prev.get("present", True):  # kendi kaydettiğimiz paket: REGISTERED kalır
+                        prev.update(present=True, updated_at=_utc_now())
                 elif state in RETRYABLE_STATES and same and prev.get("state") == state and not retry_failed:
                     prev.update(present=True, reason_code=prev.get("reason_code") or c.state)
                 elif state == "UNSUPPORTED_INPUT" and same and prev.get("state") == state:
@@ -816,7 +845,8 @@ def run_ingest(incoming: Path, data_root: Path, *, settle_seconds: float = DEFAU
                     to_process.append(c)  # güvenlik/yapı/sürüm sorunu: sonuç raporuyla birlikte kaydedilir
                 else:
                     _set_state(intake, c.path, state, c.reason, c.state, **extra)
-            _save_intake(data_root, intake)
+            if to_process or json.dumps(intake, sort_keys=True, ensure_ascii=False) != before:
+                _save_intake(data_root, intake)
             for n, candidate in enumerate(to_process):
                 results.append(_process(candidate, data_root, f"{run_id}-{n + 1:02d}", intake, auditor))
             if results:

@@ -51,6 +51,47 @@ export interface CatalogItem {
   description: string | null;
   record_issue_count: number;
   version_count: number;
+  /** Kayıtlı sürümün depolama yeri; bulut kayıtları yalnız commit işareti doğrulanmışsa görünür. */
+  storage?: StorageLocation;
+}
+
+export interface StorageLocation {
+  backend: "local" | "r2";
+  provider: string | null;
+  bucket: string | null;
+  committed_at: string | null;
+  total_bytes: number | null;
+  synced_at: string | null;
+}
+
+export interface StorageStatus {
+  active_backend: string;
+  cloud: {
+    provider: string;
+    configured: boolean;
+    bucket: string | null;
+    intake_bucket: string | null;
+    separate_intake_bucket: boolean;
+    credentials: { uploader: boolean | null; publisher: boolean | null };
+    intake_enabled: boolean;
+    connection: string | null;
+    last_scan_finished: string | null;
+    last_error: string | null;
+    interval_seconds: number;
+  };
+  catalog: {
+    cloud_release_count: number;
+    local_release_count: number;
+    /** Katalogdan türetilmiş (commit işaretlerindeki nesne boyutlarının toplamı); sağlayıcı fatura ölçümü değildir. */
+    committed_bytes: number | null;
+    committed_bytes_source: string;
+    last_sync_success_at: string | null;
+    last_sync_result: string | null;
+    last_sync_problems: string[];
+  };
+  cache: { max_bytes: number; usage_bytes: number | null; status?: string };
+  staging: { usage_bytes: number; max_bytes: number };
+  billing_note: string;
 }
 
 export interface Finding {
@@ -194,6 +235,12 @@ export interface IntakePackage {
   support_gap_path?: string | null;
   user_decision?: string | null;
   source?: string;
+  /** Bulut kabulü: indirme/doğrulama ilerlemesi ve sonuç. */
+  bytes_done?: number;
+  bytes_total?: number;
+  cloud_state?: "ACCEPTED" | "REJECTED";
+  storage?: string;
+  release_prefix?: string;
 }
 
 export interface IntakeStatus {
@@ -268,6 +315,8 @@ export const api = {
     request<DatasetMetadata>(`/data/dataset?${new URLSearchParams(version ? { id, version } : { id })}`),
   intake: () => request<IntakeStatus>("/data/intake"),
   scanNow: () => request<unknown>("/data/intake/scan", { method: "POST" }),
+  storage: () => request<StorageStatus>("/data/storage"),
+  storageSync: () => request<unknown>("/data/storage/sync", { method: "POST" }),
   submitPackage: (path: string, expect_dataset_id?: string) =>
     request<{ accepted: boolean }>("/data/intake/submit", { method: "POST", body: JSON.stringify({ path, expect_dataset_id }) }),
   retryPackage: (key: string) => request<unknown>("/data/intake/retry", { method: "POST", body: JSON.stringify({ key }) }),
@@ -301,6 +350,7 @@ const KNOWN_ERRORS = new Set([
   "verification_log_broken",
   "verification_log_busy",
   "session_code_invalid",
+  "cloud_unavailable",
   "validation",
   "network",
 ]);

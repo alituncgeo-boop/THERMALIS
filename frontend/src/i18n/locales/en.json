@@ -72,6 +72,7 @@
     "verification_log_broken": "The verification log failed its integrity check; no new verification is written until it is examined.",
     "verification_log_busy": "The verification log is in use. Try again in a moment.",
     "session_code_invalid": "The session code is invalid or has expired.",
+    "cloud_unavailable": "The cloud store could not be reached or credentials are missing; nothing was done.",
     "validation": "The information entered is not valid.",
     "network": "Cannot reach the server. Is THERMALIS running?",
     "unknown": "An unexpected error occurred."
@@ -188,6 +189,44 @@
       "accepted": "Package accepted. Follow its status in the data intake panel.",
       "select_first": "Select a dataset first"
     },
+    "storage": {
+      "title": "Storage",
+      "location": "Storage location",
+      "location_local": "Local data root on this computer",
+      "location_r2": "Cloudflare R2 · bucket {{bucket}} (verified commit marker)",
+      "committed_line": "committed {{at}} · {{size}}",
+      "backend": { "local": "Local", "r2": "Cloud (R2)" },
+      "provider": { "r2": "Cloudflare R2" },
+      "provider_line": "{{provider}} · bucket {{bucket}}",
+      "active_backend": "active store: {{backend}}",
+      "connection": {
+        "ok": "connected",
+        "offline": "offline",
+        "error": "error",
+        "busy": "another scan is running",
+        "credentials_missing": "credentials missing",
+        "not_configured": "not configured",
+        "disabled": "cloud intake off",
+        "pending": "not scanned yet"
+      },
+      "error": {
+        "credentials_missing": "The publisher credential is not in Windows Credential Manager.",
+        "transient_error": "Temporary network error; retried at the next scan.",
+        "access_denied": "Access denied; check the key's bucket permissions."
+      },
+      "cloud_datasets": "Cloud versions",
+      "committed_volume": "Committed volume",
+      "cache": "Cache",
+      "sync_now": "Sync now",
+      "sync_disabled": "Cloud intake is off in settings",
+      "last_sync": "last successful sync: {{at}}",
+      "never": "never",
+      "credentials_line": "credentials — uploader: {{uploader}}, publisher: {{publisher}}",
+      "present": "present",
+      "absent": "absent",
+      "catalog_derived_note": "Catalog-derived (object sizes in commit markers); not the provider's billing measurement.",
+      "sync_problems": "{{count}} sync problems (uncommitted or unverifiable records were not added to the catalog)"
+    },
     "intake": {
       "title": "Data intake",
       "watch_off": "Automatic folder watching is off (Settings)",
@@ -199,6 +238,7 @@
       "no_integration": "No integration yet",
       "ignored_line": "{{count}} input outside the package protocol (not a failure; see packages)",
       "manual": "manual",
+      "cloud": "cloud",
       "retry": "Retry",
       "stat": {
         "registered": "Datasets",
@@ -232,7 +272,28 @@
         "authorization_statement_missing": "Restricted data without an authorization statement; a user decision is required.",
         "access_classification_unknown": "The package does not declare its access classification; a user decision is required.",
         "check_failed": "A registration check failed; see the detail and the ingestion report.",
-        "unexpected": "Unexpected error; no partial record was left."
+        "unexpected": "Unexpected error; no partial record was left.",
+        "cloud_offline": "Cloud connection interrupted; the package resumes at the next scan (verified files are kept).",
+        "insufficient_staging_space": "Deferred: not enough staging space or free disk space. Nothing was rejected; it is retried later.",
+        "DOWNLOADING": "Downloading from the cloud and verifying SHA-256.",
+        "PUBLISHING": "Publishing: upload, full read-back verification, then the commit marker.",
+        "marker_invalid": "The completion marker (THERMALIS_READY.json) is invalid; the package is not processed.",
+        "authorization_required": "Restricted data without a cloud storage authorization record; it is not accepted.",
+        "authorization_schema_invalid": "The authorization record does not follow the required schema.",
+        "authorization_fields_missing": "Required fields are missing from the authorization record.",
+        "authorization_does_not_match_package": "The authorization record belongs to another package, version or manifest.",
+        "authorization_scope_missing_cloud_storage": "The authorization record does not cover cloud storage.",
+        "authorization_storage_mismatch": "The authorization record names another provider or bucket.",
+        "authorization_not_yet_valid": "The authorization record is not yet valid.",
+        "authorization_expired": "The authorization record has expired.",
+        "authorization_invalid_time": "The authorization record contains an invalid date.",
+        "authorization_unreadable": "The authorization record could not be read.",
+        "ALREADY_REGISTERED_LOCALLY": "This version is already registered locally; it is not duplicated in the cloud (migration is a separate approved step).",
+        "sha256_mismatch": "A downloaded file does not match its SHA-256; the package is rejected.",
+        "package_object_missing": "A file listed in the completion marker is missing in the cloud.",
+        "access_class_mismatch": "The access class in the marker differs from the package declaration.",
+        "storage_error": "Storage error; see the detail. Nothing was overwritten or deleted.",
+        "staging_path_too_long": "Deferred: staging paths would exceed the Windows path limit. Choose a shorter staging folder in settings; the package was not rejected."
       },
       "result": {
         "busy": "another integration is running",
@@ -403,14 +464,16 @@
         "LAYER_STATUS_COUNTED_AS_EXCEPTION": "Layer status counted as an exception",
         "FINDING_ORIGIN_NOT_RECORDED": "Finding origin not recorded",
         "PACKAGE_FINGERPRINT_NOT_RECORDED": "Package fingerprint not recorded",
-        "RECORD_FILES_WRITABLE": "Record files are writable"
+        "RECORD_FILES_WRITABLE": "Record files are writable",
+        "DUPLICATE_ACROSS_BACKENDS": "Same version both local and in the cloud"
       },
       "issue_detail": {
         "DUPLICATE_EXCEPTION_ID": "{{detail}}",
         "LAYER_STATUS_COUNTED_AS_EXCEPTION": "{{detail}} layer-status entries are in the exception list",
         "FINDING_ORIGIN_NOT_RECORDED": "Origin derived from each record's source file",
         "PACKAGE_FINGERPRINT_NOT_RECORDED": "Computed from {{detail}} (legacy record)",
-        "RECORD_FILES_WRITABLE": "{{detail}}"
+        "RECORD_FILES_WRITABLE": "{{detail}}",
+        "DUPLICATE_ACROSS_BACKENDS": "The cloud record was not indexed; the catalog uses the local record (a version is never duplicated across storage)."
       },
       "origin": {
         "package_exception_register": "Package register",

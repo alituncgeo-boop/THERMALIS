@@ -24,7 +24,7 @@ import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import BinaryIO, Iterator
+from typing import BinaryIO, Callable, Iterator
 
 from .errors import Cancelled, ChecksumMismatch, NotFound
 
@@ -159,8 +159,14 @@ class ObjectStore(ABC):
 
     @abstractmethod
     def upload_file(self, key: str, path: Path, *, expected_sha256: str, operation_id: str,
-                    metadata: dict[str, str] | None = None, cancel: CancelToken | None = None) -> ObjectInfo:
-        """Büyük dosyayı yalnız-oluştur olarak yükler; kesilirse aynı ``operation_id`` ile sürdürülür."""
+                    metadata: dict[str, str] | None = None, cancel: CancelToken | None = None,
+                    progress: "Callable[[int], None] | None" = None, source_verified: bool = False) -> ObjectInfo:
+        """Büyük dosyayı yalnız-oluştur olarak yükler; kesilirse aynı ``operation_id`` ile sürdürülür.
+
+        ``progress(n)``: aktarılan (veya sürdürmede zaten sunucuda olan) bayt sayısı artışı.
+        ``source_verified``: çağıran dosyanın SHA-256'sını az önce doğruladıysa yeniden hesaplanmaz;
+        bunun yerine boyut + değişiklik zamanı yükleme süresince denetlenir (dosya değişirse yükleme durur).
+        """
 
     def gdal_path(self, key: str) -> str | None:
         return None

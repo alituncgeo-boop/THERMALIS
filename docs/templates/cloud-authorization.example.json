@@ -1,0 +1,16 @@
+{
+  "schema": "thermalis.cloud-authorization/1",
+  "dataset_id": "THERMALIS_DATA/<AILE>/<KAPSAM>",
+  "version": "<sürüm>",
+  "package_id": "<paket kimliği>",
+  "manifest_sha256": "<PACKAGE/MANIFEST.json SHA-256 — thermalis-upload authorization-template çıktısından>",
+  "access_class": "RESTRICTED",
+  "scope": ["cloud_storage"],
+  "storage": {"provider": "r2", "bucket": "thermalis-data-dev"},
+  "granted_by": "<veri sahibi adına izin veren kişi / unvan>",
+  "authority": "<kurum>",
+  "document_reference": "<imzalı izin belgesinin arşiv numarası veya dosya adı>",
+  "granted_at": "<YYYY-MM-DDTHH:MM:SSZ>",
+  "expires_at": null,
+  "conditions": ["Herkese açık erişim yok", "Yeniden dağıtım yok", "Yalnız <proje> kapsamında bilimsel analiz"]
+}

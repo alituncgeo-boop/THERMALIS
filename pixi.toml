@@ -19,6 +19,22 @@ boto3 = "==1.43.127"
 botocore = "==1.43.127"
 keyring = "==25.7.0"
 
+# İkinci bilgisayar için hafif ortam: yalnız paket yükleyici (GDAL, Node, FastAPI yok).
+# Kurulum: pixi install --environment upload · Kullanım: scripts\thermalis-upload.cmd (bkz. docs/cloud-intake.md)
+[feature.upload.dependencies]
+python = "3.12.*"
+pydantic = ">=2.7"
+platformdirs = ">=4.2"
+boto3 = "==1.43.127"
+botocore = "==1.43.127"
+keyring = "==25.7.0"
+
+[feature.upload.tasks]
+upload-package = { cmd = "python -m thermalis.cloud.upload", cwd = "src" }
+
+[environments]
+upload = { features = ["upload"], no-default-feature = true }
+
 [tasks]
 # Arayüz bağımlılıklarını kur ve derle
 install-ui = { cmd = "npm ci", cwd = "frontend" }
@@ -31,6 +47,8 @@ data = { cmd = "python -m thermalis data", cwd = "src" }
 storage = { cmd = "python -m thermalis storage", cwd = "src" }
 # CANLI R2 duman testi (yalnız elle; THERMALIS_R2_LIVE_TEST=1 gerekir; sentetik veri). Bkz. docs/cloud-storage.md
 r2-smoke = { cmd = "python -m thermalis storage smoke-test --role publisher --confirm-live", cwd = "src" }
+# CANLI uçtan uca bulut kabul testi (yalnız elle; sentetik; e2e-tests/<çalıştırma>/ ad alanı, geçici katalog)
+r2-intake-e2e = { cmd = "python -m thermalis storage intake-e2e --role publisher --confirm-live", cwd = "src" }
 # Testler
 test = "pytest -q"
 test-ui = { cmd = "npm test", cwd = "frontend", depends-on = ["install-ui"] }

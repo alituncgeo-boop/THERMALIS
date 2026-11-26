@@ -32,17 +32,22 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..data import catalog
+from ..data.formats.preflight import preflight
 from ..data.transfer_package import UNHASHED_PACKAGE_FILES
 from ..objectstore.base import CancelToken, ObjectStore, is_sha256_hex, sha256_path
-from ..objectstore.errors import AlreadyExists, NotFound, PreconditionFailed, StorageError, TransientError
+from ..objectstore.errors import AlreadyExists, NotFound, StorageError, TransientError
 from ..objectstore.keys import validate_key
 from ..objectstore.publication import PublicationPolicy, ReleaseFile, publish_release, reconcile_dataset_pointer
 from ..storage import read_json, write_json_atomic
 from . import authorization as auth
 from . import layout
 from .catalog_sync import mirror_folder, sync_catalog
+from .claims import Busy as ClaimBusy
+from .claims import ClaimLost, LocalLock, RenewableClaim
 
 MIB = 1024 * 1024
+LOCK_STALE_SECONDS = 30 * 60  # kalp atışı kesilmiş tarama kilidi bu süreden sonra çökmüş sayılır
+PREFLIGHT_DEFERRALS = ("adapter_required", "raster_collection_direct_publication")
 STAGING_MARGIN = 256 * MIB
 WINDOWS_PATH_LIMIT = 250  # MAX_PATH (260) altında güvenli pay; GDAL uzun yol önekini her yerde desteklemez
 TERMINAL = ("ACCEPTED", "REJECTED")
@@ -148,6 +153,8 @@ class CloudIntake:
         self.disk_free = disk_free or (lambda p: shutil.disk_usage(p).free)
         self.now = now
         self.machine = machine_tag()
+        self._lock: LocalLock | None = None
+        self._claim_obj: RenewableClaim | None = None
 
     # -- yerel durum (intake.json; arayüzün okuduğu) ------------------------------------------------
     def _local_key(self, package_id: str) -> str:
@@ -171,26 +178,26 @@ class CloudIntake:
 
     # -- tarama ------------------------------------------------------------------------------------
     def scan(self, cancel: CancelToken | None = None) -> CloudScanResult:
-        """Süreçler arası tek tarama (uygulama + komut satırı aynı anda çalışırsa biri bekler)."""
-        lock = self.staging_root / "cloud-intake.lock"
+        """Süreçler arası tek tarama (uygulama + komut satırı aynı anda çalışırsa biri bekler).
+
+        Kilit kalp atışlıdır: uzun indirme/yayın sırasında canlı tutulur; çökmüş sürecin kilidi talep süresini
+        (saatler) beklemeden ``LOCK_STALE_SECONDS`` sonra kaldırılır.
+        """
         self.staging_root.mkdir(parents=True, exist_ok=True)
-        try:
-            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            try:
-                stale = (self.now().timestamp() - lock.stat().st_mtime) > self.claim_ttl.total_seconds()
-            except OSError:
-                stale = False
-            if not stale:
-                return CloudScanResult("busy")
-            lock.unlink(missing_ok=True)  # çökme sonrası kalan eski kilit (talep süresinden uzun)
-            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, str(os.getpid()).encode("ascii"))
-        os.close(fd)
+        self._lock = LocalLock(self.staging_root / "cloud-intake.lock", stale_seconds=LOCK_STALE_SECONDS)
+        if not self._lock.acquire():
+            return CloudScanResult("busy")
         try:
             return self._scan(cancel)
         finally:
-            lock.unlink(missing_ok=True)
+            self._lock.release()
+
+    def _beat(self) -> None:
+        """Kalp atışı: yerel kilit + (varsa) bulut talebi. Ucuzdur; ağ isteği yalnız yenileme aralığında yapılır."""
+        if self._lock is not None:
+            self._lock.touch()
+        if self._claim_obj is not None:
+            self._claim_obj.renew()
 
     def _scan(self, cancel: CancelToken | None) -> CloudScanResult:
         result = CloudScanResult("ok")
@@ -210,7 +217,10 @@ class CloudIntake:
                 if processed >= self.max_packages:
                     break
                 processed += 1
-                result.outcomes.append(self.process(package_id, info.etag, cancel))
+                outcome = self.process(package_id, info.etag, cancel)
+                result.outcomes.append(outcome)
+                if outcome.status == "DEFERRED" and outcome.code in PREFLIGHT_DEFERRALS:
+                    processed -= 1  # ön denetimde ertelenen paket (indirme yok) diğer paketlerin sırasını tüketmez
         except StorageError as exc:
             result.status = "offline" if exc.retryable else "error"
             result.error = f"{exc.code}:{exc.detail}" if exc.detail else exc.code
@@ -225,39 +235,27 @@ class CloudIntake:
 
     # -- talep (claim) -------------------------------------------------------------------------------
     def _claim(self, state_key: str, op: str) -> tuple[str, dict[str, Any] | None]:
-        """("claimed", None) | ("terminal", durum) — meşgulse :class:`Busy`."""
-        body = {"schema": layout.INTAKE_STATE_SCHEMA, "status": "PROCESSING", "operation_id": op, "machine": self.machine,
-                "claimed_at": _iso(self.now())}
-        head = self.release_store.head(state_key)
-        if head is None:
-            try:
-                self.release_store.put_bytes(state_key, _canonical(body), create_only=True, operation_id=op)
-                return "claimed", None
-            except AlreadyExists:
-                head = self.release_store.head(state_key)
-        current = _read_json(self.release_store, state_key)
-        if current.get("status") in TERMINAL:
-            return "terminal", current
-        if current.get("operation_id") == op:
-            return "claimed", None  # kendi yarım işimiz: sürdür
-        claimed = datetime.fromisoformat(str(current.get("claimed_at", "1970-01-01T00:00:00Z")).replace("Z", "+00:00"))
-        if self.now() - claimed < self.claim_ttl:
-            raise Busy(current.get("machine"))
-        try:  # süresi geçmiş talep: koşullu devralma (yarışta tek kazanan)
-            self.release_store.put_bytes(state_key, _canonical({**body, "taken_over_from": current.get("operation_id")}),
-                                         if_match=head.etag, operation_id=op)
-        except PreconditionFailed:
-            raise Busy("contended") from None
-        return "claimed", None
+        """("claimed", None) | ("terminal", durum) — meşgulse :class:`Busy`.
+
+        Yenilenebilir talep: işlem sürerken ``heartbeat_at`` düzenli tazelenir; süre aşımı son kalp atışından ölçülür.
+        """
+        claim = RenewableClaim(self.release_store, state_key, operation_id=op, machine=self.machine,
+                               schema=layout.INTAKE_STATE_SCHEMA, ttl=self.claim_ttl, now=self.now)
+        try:
+            result = claim.acquire()
+        except ClaimBusy as exc:
+            raise Busy(str(exc)) from None
+        if result[0] == "claimed":
+            self._claim_obj = claim
+        return result
 
     def _finish(self, state_key: str, op: str, status: str, **fields: Any) -> dict[str, Any]:
-        head = self.release_store.head(state_key)
-        body = {"schema": layout.INTAKE_STATE_SCHEMA, "status": status, "operation_id": op, "machine": self.machine,
-                "finished_at": _iso(self.now()), **fields}
-        if head is None:
-            self.release_store.put_bytes(state_key, _canonical(body), create_only=True, operation_id=op)
-        else:
-            self.release_store.put_bytes(state_key, _canonical(body), if_match=head.etag, operation_id=op)
+        claim = self._claim_obj
+        if claim is None or claim.key != state_key:
+            claim = RenewableClaim(self.release_store, state_key, operation_id=op, machine=self.machine,
+                                   schema=layout.INTAKE_STATE_SCHEMA, ttl=self.claim_ttl, now=self.now)
+        body = claim.finish(status, **fields)
+        self._claim_obj = None
         return body
 
     # -- tek paket -----------------------------------------------------------------------------------
@@ -276,6 +274,16 @@ class CloudIntake:
         state_key = layout.intake_state_key(package_id, sha)
         base = {"dataset_id": marker.get("dataset_id"), "version": marker.get("version"), "fingerprint": sha,
                 "announcement_etag": announcement_etag, "access": marker.get("access_class"), "bytes_total": marker["total_bytes"]}
+        # Biçim ön denetimi: İNDİRMEDEN ve talep ALMADAN önce, yalnız işaretteki dosya listesinden. Desteklenmeyen
+        # biçim kalıcı RED değildir: paket bulutta kalır, ADAPTER_REQUIRED olarak ertelenir (bağdaştırıcı gelince yeniden denenir).
+        pf = preflight([f["path"] for f in marker["files"]])
+        if pf.route != "vector_package":
+            code = "raster_collection_direct_publication" if pf.route == "raster_collection" else "adapter_required"
+            detail = (f"{json.dumps(pf.formats, sort_keys=True)}; " +
+                      ("kaynak klasöründen doğrudan yayın: thermalis storage publish-collection"
+                       if pf.route == "raster_collection" else f"{', '.join(pf.reasons)}; {pf.unsupported[:5]}"))
+            self._local(package_id, "ADAPTER_REQUIRED", detail[:1000], code, **base, preflight=pf.as_dict())
+            return PackageOutcome(package_id, "DEFERRED", code, detail[:300], marker.get("dataset_id"), marker.get("version"))
         try:
             claim, terminal = self._claim(state_key, op)
         except Busy as exc:
@@ -296,14 +304,22 @@ class CloudIntake:
             shutil.rmtree(work, ignore_errors=True)
             return PackageOutcome(package_id, "REJECTED", exc.code, exc.detail, marker.get("dataset_id"), marker.get("version"))
         except Deferred as exc:
-            self._local(package_id, "WAITING_FOR_COMPLETION", exc.detail, exc.code, **base)
+            # Ertelenen paketin talebi bırakılmaz ama başka işlemci süre aşımından sonra devralabilir; aynı işlemci
+            # (belirlenimci işlem kimliği) sonraki taramada kaldığı yerden sürdürür.
+            target = "ADAPTER_REQUIRED" if exc.code == "adapter_required" else "WAITING_FOR_COMPLETION"
+            self._local(package_id, target, exc.detail, exc.code, **base)
             return PackageOutcome(package_id, "DEFERRED", exc.code, exc.detail)
+        except ClaimLost as exc:
+            self._local(package_id, "VALIDATING", f"talep başka işlemciye geçti: {exc}", "VALIDATING", **base)
+            return PackageOutcome(package_id, "BUSY", "claim_lost")
         except TransientError as exc:
             self._local(package_id, "DETECTED", f"geçici ağ hatası; sonraki taramada sürer ({exc.code})", "cloud_offline", **base)
             return PackageOutcome(package_id, "FAILED_TRANSIENT", exc.code, exc.detail)
         except StorageError as exc:  # yetki/çakışma vb.: sonuçlanmamış sayılır, ayrıntı görünür; veri yazılmaz/silinmez
             self._local(package_id, "FAILED", f"{exc.code} {exc.detail}".strip(), "storage_error", **base)
             return PackageOutcome(package_id, "FAILED_TRANSIENT" if exc.retryable else "REJECTED", exc.code, exc.detail)
+        finally:
+            self._claim_obj = None
         return outcome
 
     def _record_terminal(self, package_id: str, state: dict[str, Any], base: dict[str, Any]) -> None:
@@ -399,6 +415,9 @@ class CloudIntake:
             if entry.get("reason_code") == "unexpected":
                 # Yerel ortam hatası (disk, yol, izin): paketin bilimsel reddi değildir → kalıcı RED yazılmaz.
                 raise Deferred("unexpected", entry.get("reason") or "")
+            if entry.get("state") == "ADAPTER_REQUIRED":
+                # Biçim kapısı (S04): bağdaştırıcı eksikliği paketin reddi değildir → ertelenir, bulutta kalır.
+                raise Deferred("adapter_required", entry.get("reason") or "")
             if entry.get("state") != "REGISTERED":
                 result = read_json(Path(entry["result_path"])) if entry.get("result_path") else {}
                 raise Rejected(entry.get("reason_code") or "check_failed", entry.get("reason") or entry.get("state", ""),
@@ -438,7 +457,7 @@ class CloudIntake:
         commit = publish_release(self.release_store, dataset_id=ds, version=ver, access_class=access, files=files,
                                  records=records, operation_id=op,
                                  policy=PublicationPolicy(allow_cloud_publication=True, allowed_access_classes=allowed),
-                                 cancel=cancel)
+                                 cancel=cancel, journal=work / "verification-journal.json", heartbeat=self._beat)
         from ..objectstore.publication import release_prefix
 
         prefix = release_prefix(ds, ver)
@@ -482,6 +501,7 @@ class CloudIntake:
                     for block in iter(lambda: src.read(4 * MIB), b""):
                         if cancel is not None:
                             cancel.raise_if_cancelled(prefix + f["path"])
+                        self._beat()
                         digest.update(block)
                         size += len(block)
                         out.write(block)

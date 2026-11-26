@@ -1,0 +1,46 @@
+{
+  "dataset_id": "THERMALIS_DATA/HD02_LANDSAT_LST/ISTANBUL_180031",
+  "version": "1.0.0-rc1",
+  "access_class": "PUBLIC",
+  "access_basis": "Owner decision: USGS Landsat 8-9 Collection 2 Level-2 source products are classified PUBLIC. R2 buckets remain private. Retain source attribution (USGS).",
+  "source": {
+    "organization": "U.S. Geological Survey (USGS) EROS Center",
+    "product": "USGS Landsat 8-9 Collection 2 Level-2 Science Products (OLI/TIRS L2SP), WRS-2 path/row 180/031",
+    "citation": "Earth Resources Observation and Science (EROS) Center. (2020). Landsat 8-9 Operational Land Imager / Thermal Infrared Sensor Level-2, Collection 2 [dataset]. U.S. Geological Survey. https://doi.org/10.5066/P9OGBGM6",
+    "doi": "https://doi.org/10.5066/P9OGBGM6"
+  },
+  "supplementary_records": {
+    "license": "not_declared",
+    "basis": "PACKAGE/PROVENANCE_AND_RIGHTS.md states that USGS Landsat imagery is publicly available and that the statement does not override USGS terms; it does not declare a license for the package's own records (README, QA results, scene and coverage tables). The PUBLIC classification is the owner's decision for the USGS source products; the license of the supplementary package records remains not_declared."
+  },
+  "quality": {
+    "source_status_ref": "PACKAGE/RELEASE_CONTRACT.json#source_data_status",
+    "cross_check_refs": [
+      "PACKAGE/MANIFEST.json#science_qa_status",
+      "PACKAGE/SCHEMA_AND_UNITS.json#scientific_status"
+    ],
+    "documented_limitations_ref": "PACKAGE/RELEASE_CONTRACT.json#documented_limitations",
+    "limitations_documents": [
+      "PACKAGE/QA_SCIENTIFIC_LIMITATIONS.md",
+      "PACKAGE/YEAR_COVERAGE.csv"
+    ]
+  },
+  "collection": {
+    "interpreter": "landsat_c2_l2",
+    "layer_name": "SCENES",
+    "expected_item_count_ref": "PACKAGE/RELEASE_CONTRACT.json#source_scene_count",
+    "scene_catalog": {
+      "path": "PACKAGE/SCENE_CATALOG.csv",
+      "archive_column": "relative_path",
+      "checks": {
+        "product_id": "properties.product_id",
+        "acquisition_date": "properties.acquisition_date",
+        "satellite": "properties.platform",
+        "scene_cloud_pct": "properties.cloud_cover",
+        "sha256": "archive.sha256",
+        "bytes": "archive.bytes"
+      }
+    }
+  },
+  "declared_by": "Data owner (approved registration decisions for HD02, 2026-11)"
+}

@@ -171,9 +171,10 @@ def layer_facts(path: Path, layer_name: str) -> dict[str, Any]:
                              "crs_wkt": srs.ExportToWkt() if srs is not None else None}, sort_keys=True, ensure_ascii=False)
         total, count = 0, 0
         layer.ResetReading()
+        geometry_of = _geometry_accessor()
         for feature in layer:
             values = [_canonical(feature.GetField(i)) if feature.IsFieldSetAndNotNull(i) else None for i in range(len(fields))]
-            geom = feature.GetGeometryRef()
+            geom = geometry_of(feature)
             digest = hashlib.sha256(json.dumps(values, ensure_ascii=False, default=str).encode("utf-8") + b"\x00" +
                                     (bytes(geom.ExportToIsoWkb()) if geom is not None else b"")).digest()
             total = (total + int.from_bytes(digest, "big")) % _MOD
@@ -187,6 +188,20 @@ def layer_facts(path: Path, layer_name: str) -> dict[str, Any]:
         return result
     finally:
         ds = None  # noqa: F841
+
+
+def _geometry_accessor():
+    """Geometri okuyucusu (yalnız akış içinde, nesne hemen kullanılırken).
+
+    GDAL Python bağlamalarının ``Feature.GetGeometryRef`` yöntemi her nesneye geometri izlemek için bir ``WeakSet``
+    ekler; bu, nesne başına çöp toplayıcıya bağlı geçici bellek üretir ve tepe bellek önceki yığın durumuna göre
+    ikiye katlanabilir. İçerik kimliği hesabında geometri nesne canlıyken hemen WKB'ye çevrildiği için izleme
+    gerekmez: doğrudan erişimci kullanılır (aynı geometri, aynı WKB). Erişimci yoksa genel yöntem kullanılır.
+    """
+    from osgeo import ogr
+
+    raw = getattr(getattr(ogr, "_ogr", None), "Feature_GetGeometryRef", None)
+    return raw if raw is not None else (lambda feature: feature.GetGeometryRef())
 
 
 def read_records(path: Path, layer_name: str, fids: list[int], fields: list[str]) -> dict[int, dict[str, Any]]:

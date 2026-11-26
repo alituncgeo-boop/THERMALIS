@@ -64,7 +64,9 @@ class IntakeWatcher:
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._cloud_now = threading.Event()
+        self._cloud_wake = threading.Event()
         self._thread: threading.Thread | None = None
+        self._cloud_thread: threading.Thread | None = None
         self.status = WatcherStatus()
         self.cloud = CloudStatus(last_outcomes=[])
         self._cloud_factory = cloud_factory
@@ -73,33 +75,49 @@ class IntakeWatcher:
 
     # -- yaşam döngüsü ---------------------------------------------------------------------------
     def start(self) -> None:
+        """İki bağımsız iş parçacığı: yerel klasör taraması ve bulut taraması.
+
+        Bulut tarafındaki uzun işler (büyük paket indirme/yayın) yerel izlemeyi BLOKLAMAZ; yerel tarama kendi
+        aralığıyla sürer. İkisi de uygulamanın yaşam döngüsüyle başlar/durur (ayrı servis yok).
+        """
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, name="thermalis-intake", daemon=True)
         self._thread.start()
+        self._cloud_thread = threading.Thread(target=self._cloud_loop, name="thermalis-cloud-intake", daemon=True)
+        self._cloud_thread.start()
 
     def stop(self, timeout: float = 10.0) -> None:
         self._stop.set()
         self._wake.set()
+        self._cloud_wake.set()
         if self._thread:
             self._thread.join(timeout)
+        if self._cloud_thread:
+            self._cloud_thread.join(timeout)
 
     def trigger(self, cloud: bool = False) -> None:
         """Hemen tara (arayüzdeki "şimdi tara"). ``cloud=True``: bulut taraması/eşitlemesi de hemen yapılır."""
         if cloud:
             self._cloud_now.set()
+            self._cloud_wake.set()
         self._wake.set()
 
     def _loop(self) -> None:
         while not self._stop.is_set():
             interval = self.scan_once()
-            try:
-                interval = min(interval, self.cloud_scan_if_due())
-            except Exception:  # pragma: no cover - bulut taraması izleyiciyi asla durdurmaz
-                pass
             self._wake.wait(timeout=interval)
             self._wake.clear()
+
+    def _cloud_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                interval = self.cloud_scan_if_due()
+            except Exception:  # pragma: no cover - bulut taraması izleyiciyi asla durdurmaz
+                interval = 60.0
+            self._cloud_wake.wait(timeout=max(interval, 1.0))
+            self._cloud_wake.clear()
 
     # -- bulut taraması (ayrı, daha seyrek aralık: istek maliyeti sınırlı) ------------------------
     def cloud_scan_if_due(self) -> float:

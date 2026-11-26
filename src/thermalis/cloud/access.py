@@ -17,8 +17,9 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from ..objectstore.base import ObjectStore
 from ..objectstore.cache import CacheFull, CacheItem, ObjectCache
@@ -80,3 +81,106 @@ def materialize_asset(data_root: Path, store: ObjectStore | None, cache: ObjectC
             "dataset_version": layer["dataset_version"], "verification": "sha256_per_object_against_commit",
             "lease": "released_after_response",
             "note": "Önbellekteki kopya salt okunurdur ve önbellek dolarsa tahliye edilebilir; kullanmadan hemen önce yeniden isteyin."}
+
+
+# --------------------------------------------------------------------------- raster koleksiyonu: aralıklı erişim
+
+def _collection_context(data_root: Path, layer_dataset_id: str, version: str | None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """(katman, koleksiyon kaydı, depolama konumu)."""
+    from ..data.catalog_index import storage_location
+    from ..data.collection import read_collection
+    from ..data.contract import _layer, _physical
+
+    layer = _layer(data_root, layer_dataset_id, version)
+    _, folder = _physical(data_root, layer)
+    coll = read_collection(folder)
+    if coll is None:
+        raise StorageError("not_a_raster_collection", key=layer_dataset_id)
+    loc = storage_location(data_root, layer["dataset_id"], layer["version"]) or {"backend": "local"}
+    loc = {**loc, "record_dir": str(folder)}
+    return layer, coll, loc
+
+
+def find_asset(coll: dict[str, Any], item_id: str, member: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    item = next((i for i in coll.get("items", []) if i["item_id"] == item_id), None)
+    if item is None:
+        raise StorageError("item_not_found", key=item_id)
+    asset = next((a for a in item.get("assets", []) if (a.get("member") or item["archive"]["path"]) == member
+                  or (a.get("band_code") and a.get("band_code") == member)), None)
+    if asset is None:
+        raise StorageError("asset_not_found", key=member)
+    return item, asset
+
+
+def asset_location(data_root: Path, loc: dict[str, Any], item: dict[str, Any], asset: dict[str, Any]) -> dict[str, Any]:
+    """Varlığın okunma yolu. Arşiv üyesi → ``/vsisubfile/<konum>_<boyut>,<kapsayıcı>``; kapsayıcı yerel yol veya ``/vsis3/``."""
+    from ..data.formats.tar_index import vsisubfile
+
+    archive = item["archive"]["path"]
+    if loc["backend"] == "r2":
+        key = f"{loc.get('namespace') or ''}{loc['prefix']}payload/{archive}"
+        container = f"/vsis3/{loc.get('bucket')}/{key}"
+        out = {"backend": "r2", "bucket": loc.get("bucket"), "object_key": key}
+    else:
+        container = (Path(loc["record_dir"]) / "payload" / Path(*archive.split("/"))).as_posix()
+        out = {"backend": "local", "path": container}
+    member = asset.get("member")
+    gdal = vsisubfile(asset, container) if member else container
+    return {**out, "container": container, "gdal_path": gdal, "member": member, "byte_offset": asset.get("offset"),
+            "bytes": asset.get("bytes"), "sha256": asset.get("sha256"),
+            "range_read": "vsisubfile_over_vsis3" if member and loc["backend"] == "r2" else ("vsisubfile" if member else "direct")}
+
+
+def describe_asset(data_root: Path, layer_dataset_id: str, version: str | None, item_id: str, member: str) -> dict[str, Any]:
+    layer, coll, loc = _collection_context(data_root, layer_dataset_id, version)
+    item, asset = find_asset(coll, item_id, member)
+    return {"dataset_version": layer["dataset_version"], "item_id": item_id, "asset": asset,
+            "location": asset_location(data_root, loc, item, asset)}
+
+
+@contextmanager
+def remote_raster_session(settings) -> Iterator[None]:
+    """``/vsis3/`` okumaları için yalnız kovaya özel, bellekte tutulan geçici GDAL kimlik yapılandırması."""
+    from ..objectstore.credentials import load_credential
+    from ..objectstore.s3 import gdal_vsis3_session
+
+    cloud = settings.cloud
+    with gdal_vsis3_session(cloud.bucket, cloud.endpoint, load_credential(cloud.credential_profile, "publisher"),
+                            region=cloud.region):
+        yield
+
+
+def materialize_member(data_root: Path, store: ObjectStore | None, cache: ObjectCache | None, layer_dataset_id: str,
+                       version: str | None, item_id: str, member: str, *,
+                       disk_free: Callable[[Path], int] | None = None) -> dict[str, Any]:
+    """Tek bir arşiv üyesini (ör. ST_B10 COG) arşivin tamamını indirmeden, aralıklı okumayla önbelleğe getirir.
+
+    Yalnız üyenin baytları ``Range`` istekleriyle indirilir; üye SHA-256'sı koleksiyon kaydıyla doğrulanmadan
+    önbelleğe girmez. Değerler dönüştürülmez (kaynak DN).
+    """
+    layer, coll, loc = _collection_context(data_root, layer_dataset_id, version)
+    item, asset = find_asset(coll, item_id, member)
+    where = asset_location(data_root, loc, item, asset)
+    if loc["backend"] != "r2":
+        return {"backend": "local", "path": where["gdal_path"], "materialized": False, "dataset_version": layer["dataset_version"],
+                "note": "Yerel arşiv: üye /vsisubfile/ ile doğrudan okunur (kopya yok)."}
+    if store is None or cache is None:
+        raise StorageError("cloud_store_not_available", key=layer_dataset_id)
+    size = int(asset["bytes"])
+    if size > cache.max_bytes:
+        raise CacheCapacityExceeded(f"asset={size} cache_max={cache.max_bytes}", key=member)
+    free = (disk_free or (lambda p: shutil.disk_usage(p).free))(cache.root)
+    if not cache.contains(asset["sha256"], size) and free < size + DISK_MARGIN:
+        raise InsufficientDiskSpace(f"needed={size + DISK_MARGIN} free={free}", key=member)
+    key = f"{loc['prefix']}payload/{item['archive']['path']}"  # depo zaten ad alanıyla sarılı
+    name = (member.rsplit("/", 1)[-1] if asset.get("member") else item["archive"]["path"].rsplit("/", 1)[-1])
+    items = [CacheItem(key, name, asset["sha256"], size, offset=int(asset["offset"]) if asset.get("member") else None)]
+    tag = "r-" + hashlib.sha256(f"{layer['dataset_id']}|{layer['version']}|{item_id}|{member}".encode("utf-8")).hexdigest()[:16]
+    try:
+        with cache.materialize(store, tag, items) as root:
+            path = root / name
+    except CacheFull as exc:
+        raise CacheCapacityExceeded(exc.detail, key=member) from None
+    return {"backend": "r2", "path": str(path), "materialized": True, "bytes": size, "dataset_version": layer["dataset_version"],
+            "verification": "member_sha256_against_collection_record", "transfer": "http_range_requests_member_only",
+            "values": "source_values_unconverted"}

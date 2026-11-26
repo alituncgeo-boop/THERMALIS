@@ -30,7 +30,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from .base import CancelToken, ObjectStore, is_sha256_hex
 from .errors import AlreadyExists, NotFound, PreconditionFailed, PublicationError, PublicationNotAuthorized
@@ -57,6 +57,8 @@ class ReleaseFile:
     path: Path
     sha256: str
     size: int
+    # Çağıran SHA-256'yı az önce akışla doğruladıysa True: yüklemeden önce yeniden okunmaz (boyut + zaman denetlenir).
+    verified: bool = False
 
 
 @dataclass(frozen=True)
@@ -120,10 +122,74 @@ def read_commit(store: ObjectStore, prefix: str) -> dict | None:
     return _validate_commit(prefix, data)
 
 
+def _verify_full(store: ObjectStore, key: str, sha256: str, size: int, cancel: CancelToken | None,
+                 tick: Callable[[int], None] | None) -> str | None:
+    """Nesnenin tamamını akışla okuyup SHA-256 karşılaştırır (sınırlı bellek). Sorun yoksa ``None``."""
+    import hashlib
+
+    from .base import CHUNK
+    from .errors import NotFound as _NotFound
+
+    digest, total = hashlib.sha256(), 0
+    try:
+        with store.open_read(key) as stream:
+            for block in iter(lambda: stream.read(CHUNK), b""):
+                if cancel is not None:
+                    cancel.raise_if_cancelled(key)
+                digest.update(block)
+                total += len(block)
+                if tick is not None:
+                    tick(len(block))
+    except _NotFound:
+        return "MISSING"
+    if total != size:
+        return "SIZE_MISMATCH"
+    return None if digest.hexdigest() == sha256 else "SHA256_MISMATCH"
+
+
+class VerificationJournal:
+    """Tam geri okuma doğrulaması tamamlanan nesnelerin günlüğü (yeniden başlatmada aynı nesne yeniden okunmaz).
+
+    Girdi yalnız nesnenin ETag'i (sürüm doğrulayıcı) değişmediyse geçerlidir; yalnız-oluştur nesneler değişmez,
+    ETag değişmişse nesne yeniden okunur. Günlük yerel ve türetilmiştir: silinirse doğrulama baştan yapılır.
+    """
+
+    def __init__(self, path: Path | None, operation_id: str) -> None:
+        self.path, self.operation_id = path, operation_id
+        self.entries: dict[str, dict] = {}
+        if path is not None and path.is_file():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if data.get("operation_id") == operation_id:
+                    self.entries = dict(data.get("verified") or {})
+            except (OSError, ValueError, AttributeError):
+                self.entries = {}
+
+    def valid(self, key: str, sha256: str, size: int, etag: str | None) -> bool:
+        e = self.entries.get(key)
+        return bool(e and etag and e.get("sha256") == sha256 and e.get("size") == size and e.get("etag") == etag)
+
+    def record(self, key: str, sha256: str, size: int, etag: str | None) -> None:
+        self.entries[key] = {"sha256": sha256, "size": size, "etag": etag,
+                             "verified_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        if self.path is not None:
+            from ..storage import write_json_atomic
+
+            write_json_atomic(self.path, {"schema": "thermalis.verification-journal/1", "operation_id": self.operation_id,
+                                          "verified": self.entries})
+
+
 def publish_release(store: ObjectStore, *, dataset_id: str, version: str, access_class: str, files: list[ReleaseFile],
                     records: dict[str, bytes], operation_id: str, policy: PublicationPolicy,
-                    cancel: CancelToken | None = None) -> dict:
-    """Sürümü yayımlar veya aynı ``operation_id`` ile yarım kalmış yayını tamamlar. Yetkili kaydı döndürür."""
+                    cancel: CancelToken | None = None, journal: Path | None = None,
+                    progress: Callable[[str, int, int], None] | None = None,
+                    heartbeat: Callable[[], None] | None = None) -> dict:
+    """Sürümü yayımlar veya aynı ``operation_id`` ile yarım kalmış yayını tamamlar. Yetkili kaydı döndürür.
+
+    Sürdürme (uzun aktarımlar): aynı işlem kimliği ve aynı SHA-256 ile zaten yazılmış nesne yeniden yüklenmez;
+    ``journal`` verilirse tam geri okuması tamamlanmış nesneler (ETag değişmediyse) yeniden okunmaz.
+    ``progress(aşama, bayt, toplam)``: ``upload`` / ``verify``. ``heartbeat()``: talep yenileme (parça aralarında).
+    """
     if not policy.allow_cloud_publication:
         raise PublicationNotAuthorized("cloud_publication_disabled")
     if access_class not in policy.allowed_access_classes:
@@ -138,15 +204,35 @@ def publish_release(store: ObjectStore, *, dataset_id: str, version: str, access
             return existing  # tekrar: zaten tamam
         raise AlreadyExists("release_already_committed_by_other_operation", key=prefix + COMMIT_NAME)
 
+    import hashlib
+
+    beat = heartbeat or (lambda: None)
+    total_payload = sum(f.size for f in files)
+    counters = {"upload": 0, "verify": 0}
+
+    def tick(stage: str, total: int):
+        def _t(n: int) -> None:
+            counters[stage] += n
+            beat()
+            if progress is not None:
+                progress(stage, counters[stage], total)
+        return _t
+
     planned: list[dict] = []
     for f in sorted(files, key=lambda f: f.relpath):
         key = validate_key(prefix + "payload/" + validate_key(f.relpath))
         if cancel is not None:
             cancel.raise_if_cancelled(key)
-        store.upload_file(key, f.path, expected_sha256=f.sha256, operation_id=operation_id, metadata={"thermalis-part": "payload"},
-                          cancel=cancel)
+        beat()
+        existing = store.head(key)
+        if existing is not None and existing.operation_id == operation_id and existing.sha256 == f.sha256 \
+                and existing.size == f.size:
+            tick("upload", total_payload)(f.size)  # sürdürme: bu işlemin aynı içeriği zaten yazılmış
+        else:
+            store.upload_file(key, f.path, expected_sha256=f.sha256, operation_id=operation_id,
+                              metadata={"thermalis-part": "payload"}, cancel=cancel, progress=tick("upload", total_payload),
+                              source_verified=f.verified)
         planned.append({"key": key, "sha256": f.sha256, "size": f.size})
-    import hashlib
 
     for name in sorted(records):
         key = validate_key(prefix + "records/" + validate_key(name))
@@ -155,11 +241,20 @@ def publish_release(store: ObjectStore, *, dataset_id: str, version: str, access
         planned.append({"key": key, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)})
 
     # Bağımsız doğrulama: her nesne baştan sona okunur. Biri bile tutmazsa işaret yazılmaz.
+    verified = VerificationJournal(journal, operation_id)
+    total_all = sum(o["size"] for o in planned)
     failures = []
     for obj in planned:
-        result = store.verify_object(obj["key"], obj["sha256"], expected_size=obj["size"], cancel=cancel)
-        if not result.ok:
-            failures.append(f"{obj['key']}:{result.problem}")
+        beat()
+        info = store.head(obj["key"])
+        if info is not None and verified.valid(obj["key"], obj["sha256"], obj["size"], info.etag):
+            tick("verify", total_all)(obj["size"])
+            continue
+        problem = _verify_full(store, obj["key"], obj["sha256"], obj["size"], cancel, tick("verify", total_all))
+        if problem:
+            failures.append(f"{obj['key']}:{problem}")
+        else:
+            verified.record(obj["key"], obj["sha256"], obj["size"], info.etag if info else None)
     if failures:
         raise PublicationError("verification_failed_release_not_committed:" + ";".join(failures[:10]), key=prefix)
 

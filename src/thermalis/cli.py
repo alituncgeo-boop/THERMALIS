@@ -682,8 +682,9 @@ def main(argv: list[str] | None = None) -> int:
     pc.add_argument("--source", required=True, help="Kaynak paket klasörü (yalnız okunur; yerel tam kopya yapılmaz)")
     pc.add_argument("--declaration", default=None, help="Beyan dosyası (varsayılan: veri kökündeki kayıtlı beyan)")
     pc.add_argument("--authorization", default=None, help="RESTRICTED/UNKNOWN için bulut depolama yetki kaydı (JSON)")
-    pc.add_argument("--verify", choices=["full", "metadata"], default="full",
-                    help="Yayın sonrası ek denetim (yayın sırasında tam geri okuma her durumda yapılır)")
+    pc.add_argument("--verify", choices=["full", "metadata"], default="metadata",
+                    help="Yayın sonrası EK denetim. Yayın sırasında her nesne zaten baştan sona geri okunup SHA-256 ile "
+                         "doğrulanır ve _COMMIT.json ancak sonra yazılır; 'full' bunu ikinci kez yapar (büyük veride saatler)")
     pc.add_argument("--execute", action="store_true", help="Gerçekten yayımla")
     pc.set_defaults(func=_storage_publish_collection)
     ca = storage_sub.add_parser("collection-acceptance",

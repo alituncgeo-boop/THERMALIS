@@ -184,13 +184,27 @@ def test_content_id_includes_schema_and_domains(tmp_path: Path) -> None:
 def test_content_id_streams_without_loading_all_features(tmp_path: Path) -> None:
     rows = [(i, f"KAYIT {i:06d} " + "x" * 30) for i in range(20000)]
     _gdb_with_rows(tmp_path / "big.gdb", rows)
-    tracemalloc.start()
-    facts = layer_facts(tmp_path / "big.gdb", "L")
-    _, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-    assert facts["feature_count"] == 20000
+    # Ölçüm ayrı bir yorumlayıcıda yapılır: aynı süreçte önceki testlerin yığın durumu (ör. büyük botocore modelleri)
+    # GDAL bağlamalarının geçici tahsislerini etkiler ve tepe değeri sıraya bağlı hâle getirir. Sınır aynıdır.
+    import json as _json
+    import os
+    import subprocess
+    import sys
+
+    import thermalis
+
+    # İlk (izlenmeyen) çağrı modül içe aktarımlarını ve sürücü kaydını ısıtır; ölçülen yalnız akıştır.
+    code = ("import json, sys, tracemalloc; from pathlib import Path; from thermalis.data.vector_inspect import layer_facts; "
+            "layer_facts(Path(sys.argv[1]), 'L'); "
+            "tracemalloc.start(); f = layer_facts(Path(sys.argv[1]), 'L'); p = tracemalloc.get_traced_memory()[1]; "
+            "print(json.dumps({'count': f['feature_count'], 'peak': p}))")
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(Path(thermalis.__file__).resolve().parents[1]), os.environ.get("PYTHONPATH", "")])}
+    out = subprocess.run([sys.executable, "-c", code, str(tmp_path / "big.gdb")], capture_output=True, text=True, env=env,
+                         timeout=300, check=True).stdout.strip().splitlines()[-1]
+    result = _json.loads(out)
+    assert result["count"] == 20000
     # 20 000 kaydın tamamı bellekte tutulsaydı Python tarafı birkaç MB'ı aşardı; akış ~sabit bellekle çalışır.
-    assert peak < 2 * 1024 * 1024, peak
+    assert result["peak"] < 2 * 1024 * 1024, result["peak"]
 
 
 # ----------------------------------------------------------------------------- kaynak önceliği ve kodlama

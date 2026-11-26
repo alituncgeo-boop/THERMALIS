@@ -318,3 +318,244 @@ def run_migration_rehearsal(base_store: ObjectStore, *, provider: str, bucket: s
                 break
     steps.append(Step("namespace", "INFO", namespace))
     return steps
+
+
+# --------------------------------------------------------------------------- raster koleksiyonu kabul testi (gerçek arşivler)
+
+class _CountingStore(PrefixedStore):
+    """Aralıklı okumada indirilen baytları sayar (yalnız ölçüm; davranış aynı)."""
+
+    def __init__(self, inner: ObjectStore, prefix: str) -> None:
+        super().__init__(inner, prefix)
+        self.range_bytes = 0
+        self.range_requests = 0
+
+    def read_range(self, key, start, end):
+        data = super().read_range(key, start, end)
+        self.range_bytes += len(data)
+        self.range_requests += 1
+        return data
+
+
+def run_collection_acceptance(base_store: ObjectStore, settings, *, source: Path, spec: Path, archives: list[str],
+                              run_id: str | None = None) -> list[Step]:
+    """Seçili GERÇEK arşivlerle canlı kabul: kopyasız alt küme, yalıtılmış ad alanı, kesinti + sürdürme, tam geri okuma,
+    metadata doğruluğu (MTL ile), /vsisubfile/+/vsis3/ aralıklı okuma, üye malzemeleştirme ve sınırlı disk ölçümü.
+
+    Yalnız ``e2e-tests/<çalıştırma>/`` altına yazar; üretim önekleri ve gerçek katalog kullanılmaz.
+    """
+    import hashlib
+    import os
+    import shutil
+    import tarfile
+    import time
+    import tracemalloc
+
+    from ..data import contract
+    from ..data import declaration as decl
+    from ..data.collection import load_source_package, subset_package
+    from ..data.formats.raster import read_window
+    from ..objectstore.base import CancelToken
+    from ..objectstore.cache import ObjectCache
+    from ..objectstore.credentials import load_credential
+    from ..objectstore.errors import Cancelled
+    from ..objectstore.s3 import gdal_vsis3_session
+    from .access import describe_asset, materialize_member
+    from .catalog_sync import sync_catalog
+    from .direct import plan_collection, publish_collection, verify_collection
+    from .intake import machine_tag
+
+    run_id = run_id or f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
+    namespace = f"e2e-tests/{run_id}/"
+    store = _CountingStore(base_store, namespace)
+    cloud = settings.cloud
+    steps: list[Step] = []
+    ctx: dict = {}
+
+    def step(name: str, fn) -> bool:
+        try:
+            steps.append(Step(name, "PASS", str(fn() or "")))
+            return True
+        except Exception as exc:  # noqa: BLE001 - kabul raporu her hatayı görünür kılar
+            steps.append(Step(name, "FAIL", f"{type(exc).__name__}: {str(exc)[:400]}"))
+            return False
+
+    def tree_bytes(path: Path) -> int:
+        return sum(p.stat().st_size for p in path.rglob("*") if p.is_file()) if path.exists() else 0
+
+    with tempfile.TemporaryDirectory(prefix="thermalis-col-") as tmp_name:
+        tmp = Path(tmp_name)
+        data_root = tmp / "THERMALIS_DATA"
+        data_root.mkdir()
+        work_root = tmp / "work"
+        free_before = shutil.disk_usage(tmp).free
+        original = load_source_package(Path(source))
+        before = {e.path: (original.path(e.path).stat().st_size, original.path(e.path).stat().st_mtime_ns) for e in original.entries}
+        ds = "THERMALIS_DATA/E2E_COLLECTION/ACCEPTANCE"
+        ver = f"0.0.1-acc.{run_id.split('-')[-1]}"
+
+        def subset():
+            pkg = subset_package(original, archives, tmp / "subset", f"E2E_COLLECTION_{run_id.split('-')[-1]}")
+            body = json.loads(Path(spec).read_text(encoding="utf-8-sig"))
+            body.update(schema=decl.SCHEMA, package_id=pkg.package_id, manifest_sha256=pkg.manifest_sha256, dataset_id=ds, version=ver,
+                        declared_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        declared_by="THERMALIS live acceptance test (synthetic identity; real source archives)")
+            ctx.update(pkg=pkg, declaration=decl.validate(body))
+            return (f"{len(archives)} gerçek arşiv ({sum(pkg.path(a).stat().st_size for a in archives) / 1e9:.2f} GB) yerinde; "
+                    f"yalnız alt küme MANIFEST.json yazıldı (kopya yok)")
+
+        def plan():
+            tracemalloc.start()
+            t0 = time.time()
+            p = plan_collection(ctx["pkg"].root, ctx["declaration"], data_root=data_root, work_root=work_root, provider=cloud.provider,
+                                bucket=cloud.bucket or "", package=ctx["pkg"])
+            peak = tracemalloc.get_traced_memory()[1]
+            tracemalloc.stop()
+            ctx["plan"] = p
+            s = p.summary()
+            assert s["items"] == len(archives) and s["raster_assets"] > 0, s
+            return (f"{s['items']} sahne · {s['assets']} üye · {s['raster_assets']} raster · {time.time() - t0:.0f} s · "
+                    f"Python bellek tepe {peak / 1e6:.0f} MB · çalışma klasörü {tree_bytes(work_root) / 1e6:.2f} MB · "
+                    f"kalite {s['quality_status']} ({s['source_status']}) · sorun {s['issue_count']}")
+
+        def interrupted_then_resumed():
+            p = ctx["plan"]
+            cancel = CancelToken()
+            seen = {"n": 0}
+
+            def stop_midway(stage: str, done: int, total: int) -> None:
+                seen["n"] = done
+                if stage == "upload" and done >= min(total // 3, 300 * 1024 * 1024):
+                    cancel.cancel()
+            try:
+                publish_collection(store, p, machine=machine_tag(), cancel=cancel, progress=stop_midway)
+                raise AssertionError("publication was not interrupted")
+            except Cancelled:
+                pass
+            first = seen["n"]
+            sent = {"upload": 0}
+            last = {"upload": 0}
+
+            def count(stage: str, done: int, total: int) -> None:
+                if stage == "upload":
+                    sent["upload"] += done - last["upload"]
+                    last["upload"] = done
+            t0 = time.time()
+            r = publish_collection(store, p, machine=machine_tag(), progress=count)
+            assert r["status"] == "PUBLISHED", r
+            ctx["publish_seconds"] = time.time() - t0
+            return (f"ilk deneme {first / 1e6:.0f} MB sonra iptal edildi; aynı komut sürdürdü ve tamamladı "
+                    f"({r['objects']} nesne, {r['bytes'] / 1e9:.2f} GB; tam geri okuma + _COMMIT.json, {ctx['publish_seconds']:.0f} s)")
+
+        def idempotent():
+            r = publish_collection(store, ctx["plan"], machine=machine_tag())
+            assert r["status"] == "ALREADY_PUBLISHED", r
+            return "yeniden çalıştırma: yükleme yok (ALREADY_PUBLISHED)"
+
+        def verified():
+            v = verify_collection(store, ctx["plan"], full=False)
+            assert v["status"] == "PASS", v
+            return f"{v['payload_files']} payload dosyası manifestle birebir; kayıtlar birebir; erişim {v['access_class']}"
+
+        def catalog_and_metadata():
+            sync = sync_catalog(store, data_root, provider=cloud.provider, bucket=cloud.bucket or "", namespace=namespace)
+            assert sync.status == "ok" and sync.mirrored, sync
+            lid = f"{ds}/{ctx['declaration']['collection']['layer_name']}"
+            col = contract.collection(data_root, lid)
+            assert col["item_count"] == len(archives), col["item_count"]
+            checked = 0
+            for a in archives:
+                with tarfile.open(ctx["pkg"].path(a), "r:") as t:
+                    mtl_m = next(m for m in t.getmembers() if m.name.endswith("_MTL.json"))
+                    mtl = json.load(t.extractfile(mtl_m))["LANDSAT_METADATA_FILE"]
+                    members = {m.name: (m.offset_data, m.size) for m in t.getmembers()}
+                pid = mtl["PRODUCT_CONTENTS"]["LANDSAT_PRODUCT_ID"]
+                item = contract.collection_item(data_root, lid, None, pid)
+                props = item["properties"]
+                assert props["acquisition_date"] == mtl["IMAGE_ATTRIBUTES"]["DATE_ACQUIRED"]
+                assert props["platform"] == mtl["IMAGE_ATTRIBUTES"]["SPACECRAFT_ID"]
+                assert props["cloud_cover"] == float(mtl["IMAGE_ATTRIBUTES"]["CLOUD_COVER"])
+                st = mtl["LEVEL2_SURFACE_TEMPERATURE_PARAMETERS"]
+                b10 = next(x for x in item["assets"] if x.get("band_code") == "ST_B10")
+                assert b10["scale"] == float(st["TEMPERATURE_MULT_BAND_ST_B10"]) and b10["add_offset"] == float(st["TEMPERATURE_ADD_BAND_ST_B10"])
+                assert b10["raster"]["bands"][0]["nodata"] == 0 and b10["raster"]["crs"]["epsg"] == 32635 and b10["raster"]["resolution"] == [30.0, 30.0]
+                for x in item["assets"]:
+                    assert members[x["member"]] == (x["offset"], x["bytes"]), x["member"]
+                ctx.setdefault("b10", []).append((lid, pid, b10, a))
+                checked += 1
+            ctx["lid"] = lid
+            return (f"katalog eşitlendi; {checked} sahne MTL ile birebir (tarih, uydu, bulut, ST_B10 ölçek/kaydırma kaynak beyanı, "
+                    f"nodata 0, EPSG:32635, 30 m) ve tüm üye konumları tarfile ile aynı")
+
+        def range_read():
+            from osgeo import gdal
+
+            lid, pid, b10, archive = ctx["b10"][0]
+            loc = describe_asset(data_root, lid, None, pid, "ST_B10")["location"]
+            assert loc["range_read"] == "vsisubfile_over_vsis3", loc
+            local_path = f"/vsisubfile/{b10['offset']}_{b10['bytes']},{ctx['pkg'].path(archive).as_posix()}"
+            gdal.SetConfigOption("CPL_VSIL_NETWORK_STATS_ENABLED", "YES")
+            gdal.NetworkStatsReset()
+            with gdal_vsis3_session(cloud.bucket, cloud.endpoint, load_credential(cloud.credential_profile, "publisher"), region=cloud.region):
+                remote = read_window(loc["gdal_path"], 1, 3000, 3000, 512, 512)
+                ds_r = gdal.Open(loc["gdal_path"])
+                ov = ds_r.GetRasterBand(1).GetOverview(3).ReadRaster()
+                ds_r = None
+            stats = json.loads(gdal.NetworkStatsGetAsSerializedJSON() or "{}")
+            gdal.SetConfigOption("CPL_VSIL_NETWORK_STATS_ENABLED", None)
+            ds_l = gdal.Open(local_path)
+            ov_local = ds_l.GetRasterBand(1).GetOverview(3).ReadRaster()
+            ds_l = None
+            assert remote == read_window(local_path, 1, 3000, 3000, 512, 512) and ov == ov_local
+            def _sum(node) -> int:  # GDAL ağ istatistiği iç içe (işleyici/dosya/yöntem); en üst toplam yoksa yapraklar toplanır
+                if isinstance(node, dict):
+                    if isinstance(node.get("downloaded_bytes"), int):
+                        return node["downloaded_bytes"]
+                    return sum(_sum(v) for v in node.values())
+                return 0
+            downloaded = _sum(stats["methods"]) if isinstance(stats.get("methods"), dict) else _sum(stats)
+            ctx["network_stats"] = stats
+            ctx["range_downloaded"] = downloaded
+            return (f"R2 /vsisubfile/+/vsis3/: 512×512 pencere ve 3. genel bakış kaynakla bayt bayt aynı (ham DN, dönüşüm yok); "
+                    f"indirilen {downloaded / 1e6:.2f} MB / üye {b10['bytes'] / 1e6:.0f} MB / arşiv {ctx['pkg'].path(archive).stat().st_size / 1e6:.0f} MB")
+
+        def member_materialization():
+            lid, pid, b10, archive = ctx["b10"][0]
+            cache = ObjectCache(tmp / "cache", 2 * 1024 ** 3, protected_roots=[data_root])
+            store.range_bytes = 0
+            m = materialize_member(data_root, store, cache, lid, None, pid, "ST_B10")
+            got = hashlib.sha256(Path(m["path"]).read_bytes()).hexdigest()
+            assert got == b10["sha256"] and m["bytes"] == b10["bytes"], m
+            assert store.range_bytes == b10["bytes"], (store.range_bytes, b10["bytes"])
+            local_path = f"/vsisubfile/{b10['offset']}_{b10['bytes']},{ctx['pkg'].path(archive).as_posix()}"
+            assert read_window(m["path"], 1, 100, 100, 256, 256) == read_window(local_path, 1, 100, 100, 256, 256)
+            return (f"yalnız üye indirildi: {store.range_bytes / 1e6:.1f} MB ({store.range_requests} aralık isteği; arşiv "
+                    f"{ctx['pkg'].path(archive).stat().st_size / 1e6:.0f} MB indirilmedi); üye SHA-256 kayıtla aynı; değerler ham")
+
+        def bounded_disk():
+            work = tree_bytes(work_root)
+            cache = tree_bytes(tmp / "cache")
+            mirror = tree_bytes(data_root)
+            largest = max((p.stat().st_size for p in tmp.rglob("*") if p.is_file()), default=0)
+            total_archives = sum(ctx["pkg"].path(a).stat().st_size for a in archives)
+            assert largest < min(total_archives, 200 * 1024 ** 2), largest
+            assert work < 50 * 1024 ** 2, work
+            return (f"yerel yazım: çalışma {work / 1e6:.2f} MB · katalog yansısı {mirror / 1e6:.2f} MB · önbellek (tek üye) "
+                    f"{cache / 1e6:.1f} MB · en büyük yerel dosya {largest / 1e6:.1f} MB; arşivler ({total_archives / 1e9:.2f} GB) "
+                    f"kopyalanmadı/çıkarılmadı; disk boşluğu farkı {(free_before - shutil.disk_usage(tmp).free) / 1e6:.0f} MB")
+
+        def source_untouched():
+            after = {e.path: (original.path(e.path).stat().st_size, original.path(e.path).stat().st_mtime_ns) for e in original.entries}
+            assert after == before
+            return f"kaynak paket ({len(before)} dosya) boyut ve değişiklik zamanı aynı"
+
+        for name, fn in (("subset_without_copy", subset), ("plan_index_verify", plan),
+                         ("interrupt_and_resume_publication", interrupted_then_resumed), ("idempotent_rerun", idempotent),
+                         ("commit_matches_manifest", verified), ("catalog_and_metadata_accuracy", catalog_and_metadata),
+                         ("remote_range_read", range_read), ("member_materialization", member_materialization),
+                         ("bounded_local_disk", bounded_disk), ("source_untouched", source_untouched)):
+            if not step(name, fn) and name in ("subset_without_copy", "plan_index_verify", "interrupt_and_resume_publication"):
+                break
+        os.environ.pop("CPL_VSIL_NETWORK_STATS_ENABLED", None)
+    steps.append(Step("namespace", "INFO", namespace))
+    return steps

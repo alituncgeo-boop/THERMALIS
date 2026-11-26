@@ -271,6 +271,33 @@ def read_ready_marker(folder: Path) -> tuple[bool, str | None]:
     return True, None
 
 
+def _collection_candidate(folder: Path, data_root: Path) -> str | None:
+    """Mevcut paket sözleşmesi olmayan ama manifestli raster koleksiyonu (ör. TAR'lı Landsat).
+
+    Otomatik kayıt yapılmaz (büyük veri; doğrudan yayın açık bir işlemdir). Yalnız durum ve gereken adım bildirilir:
+    paket dışı beyan var mı, manifeste bağlı mı. Dosya içeriği okunmaz (yalnız manifest listesi).
+    """
+    from .declaration import DeclarationError, find
+    from .formats.preflight import preflight
+
+    manifest = folder / "PACKAGE" / "MANIFEST.json"
+    try:
+        meta = json.loads(manifest.read_text(encoding="utf-8-sig"))
+        paths = [str(r["path"]) for r in meta.get("sha256_files") or []]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    if not paths or preflight(paths).route != "raster_collection":
+        return None
+    package_id = str(meta.get("package_id") or meta.get("package") or folder.name)
+    try:
+        found = find(data_root, package_id, sha256_file(manifest))
+    except DeclarationError as exc:
+        return f"raster_collection; declaration_invalid:{exc.code}"
+    if found is None:
+        return "raster_collection; declaration_missing (thermalis storage declare-collection)"
+    return f"raster_collection; declaration_ok {found['dataset_id']} {found['version']} (thermalis storage publish-collection)"
+
+
 def assess(folder: Path, data_root: Path, settle_seconds: float = DEFAULT_SETTLE_SECONDS, now: float | None = None) -> Candidate:
     """Bir klasörün işlenmeye hazır olup olmadığını manifest ve metadata üzerinden belirler (yalnız okur)."""
     now = time.time() if now is None else now
@@ -288,6 +315,10 @@ def assess(folder: Path, data_root: Path, settle_seconds: float = DEFAULT_SETTLE
         return candidate("INCOMPLETE", f"incomplete_marker: {markers}")
     if partial:
         return candidate("INCOMPLETE", f"partial_files: {partial[:5]}")
+    if (folder / "PACKAGE" / "MANIFEST.json").is_file() and not (folder / "PACKAGE" / "RELEASE_STATUS.json").is_file():
+        collection = _collection_candidate(folder, data_root)
+        if collection is not None:
+            return candidate("DIRECT_PUBLICATION", collection)
     if not (folder / "PACKAGE" / "MANIFEST.json").is_file() or not (folder / "PACKAGE" / "RELEASE_STATUS.json").is_file():
         return candidate("NOT_A_PACKAGE", "PACKAGE/MANIFEST.json veya PACKAGE/RELEASE_STATUS.json yok")
     marker_ok, marker_error = read_ready_marker(folder)
@@ -654,6 +685,8 @@ REASON_CODES = (
     "authorization_scope_missing_cloud_storage", "authorization_storage_mismatch", "authorization_not_yet_valid",
     "authorization_expired", "authorization_invalid_time", "authorization_unreadable", "ALREADY_REGISTERED_LOCALLY",
     "sha256_mismatch", "package_object_missing", "access_class_mismatch", "storage_error", "staging_path_too_long",
+    # Biçim ön denetimi ve raster koleksiyonları (data/formats, cloud/direct.py)
+    "adapter_required", "raster_collection_direct_publication", "DIRECT_PUBLICATION",
 )
 RETRYABLE_STATES = ("BLOCKED", "ADAPTER_REQUIRED", "FAILED")
 IN_FLIGHT_STATES = ("VALIDATING", "INGESTING")
@@ -661,6 +694,8 @@ CANDIDATE_TO_INTAKE = {
     "READY": "READY", "SETTLING": "WAITING_FOR_COMPLETION", "INCOMPLETE": "WAITING_FOR_COMPLETION",
     "NOT_A_PACKAGE": "WAITING_FOR_COMPLETION", "ARCHIVE": "UNSUPPORTED_INPUT", "UNSAFE": "BLOCKED", "VERSION_CONFLICT": "BLOCKED",
     "INVALID": "FAILED", "ALREADY_REGISTERED": "ALREADY_REGISTERED",
+    # Raster koleksiyonu: kayıt bağdaştırıcısı doğrudan yayındır (açık komut); izleyici işlemez, durumu bildirir.
+    "DIRECT_PUBLICATION": "ADAPTER_REQUIRED",
 }
 # Aynı süreçteki iş parçacıkları (izleyici + elle ekleme) sırayla çalışır; süreçler arası IngestLock dosyasıdır.
 _PROCESS_LOCK = threading.Lock()
@@ -837,7 +872,8 @@ def run_ingest(incoming: Path, data_root: Path, *, settle_seconds: float = DEFAU
                 elif state == "ALREADY_REGISTERED" and prev and prev.get("state") == "REGISTERED":
                     if not prev.get("present", True):  # kendi kaydettiğimiz paket: REGISTERED kalır
                         prev.update(present=True, updated_at=_utc_now())
-                elif state in RETRYABLE_STATES and same and prev.get("state") == state and not retry_failed:
+                elif state in RETRYABLE_STATES and same and prev.get("state") == state and not retry_failed \
+                        and c.state != "DIRECT_PUBLICATION":  # beyan paket dışında: eklenince neden güncellenmeli
                     prev.update(present=True, reason_code=prev.get("reason_code") or c.state)
                 elif state == "UNSUPPORTED_INPUT" and same and prev.get("state") == state:
                     prev["present"] = True  # değişmemiş bağımsız girdi: her taramada yeni kayıt/uyarı üretilmez

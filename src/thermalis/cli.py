@@ -442,6 +442,132 @@ def _storage_migration_rehearsal(args: argparse.Namespace) -> int:
     return 0 if ok else 2
 
 
+def _progress_printer():
+    """Uzun işlemler için seyrek ilerleme satırı (aşama, bayt, toplam)."""
+    import time
+
+    state = {"t": 0.0, "stage": None}
+
+    def report(stage: str, done: int, total: int) -> None:
+        now = time.monotonic()
+        if stage != state["stage"] or now - state["t"] >= 15 or done >= total:
+            state.update(t=now, stage=stage)
+            pct = 100.0 * done / total if total else 100.0
+            print(f"  [{stage}] {done / 1e9:.2f} / {total / 1e9:.2f} GB ({pct:.1f}%)", flush=True)
+    return report
+
+
+def _collection_work_root(settings) -> Path:
+    from .objectstore.factory import staging_root
+
+    return staging_root(settings) / "collections"
+
+
+def _storage_declare_collection(args: argparse.Namespace) -> int:
+    """Paket dışı beyanı manifest özetine bağlayıp kaydeder (kaynak paket değişmez)."""
+    from datetime import datetime, timezone
+
+    from .data import declaration as decl
+    from .data.collection import CollectionError, load_source_package
+    from .settings import effective_data_root, load_settings
+
+    settings = load_settings()
+    try:
+        pkg = load_source_package(Path(args.source))
+        spec = json.loads(Path(args.spec).read_text(encoding="utf-8-sig"))
+        if not isinstance(spec, dict):
+            raise decl.DeclarationError("declaration_schema_invalid")
+        body = {**spec, "schema": decl.SCHEMA, "package_id": pkg.package_id, "manifest_sha256": pkg.manifest_sha256,
+                "declared_at": spec.get("declared_at") or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        path = decl.save(effective_data_root(settings), body)
+    except (CollectionError, decl.DeclarationError) as exc:
+        print(f"REDDEDİLDİ / REFUSED: {exc.code} {exc.detail}", file=sys.stderr)
+        return 2
+    except (OSError, ValueError) as exc:
+        print(f"REDDEDİLDİ / REFUSED: spec_unreadable {type(exc).__name__}", file=sys.stderr)
+        return 2
+    print(f"Beyan kaydedildi / declaration saved: {path}")
+    print(f"  paket {pkg.package_id} · MANIFEST SHA-256 {pkg.manifest_sha256}")
+    print(f"  {body['dataset_id']} {body['version']} · erişim {body['access_class']} · kaynak paket DEĞİŞMEDİ")
+    return 0
+
+
+def _storage_publish_collection(args: argparse.Namespace) -> int:
+    """Raster koleksiyonunu kaynak klasöründen doğrudan yayımlar. Varsayılan: kuru çalıştırma (ağ yok)."""
+    from .cloud.direct import DirectRefused, plan_collection, publish_collection, verify_collection
+    from .cloud.intake import machine_tag
+    from .data import declaration as decl
+    from .data.collection import CollectionError, load_source_package
+    from .objectstore.errors import StorageError
+    from .settings import effective_data_root, load_settings
+
+    settings = load_settings()
+    root = effective_data_root(settings)
+    try:
+        if args.declaration:
+            declaration_src = Path(args.declaration)
+        else:
+            pkg = load_source_package(Path(args.source))
+            found = decl.find(root, pkg.package_id, pkg.manifest_sha256)
+            if found is None:
+                raise decl.DeclarationError("declaration_missing", "thermalis storage declare-collection")
+            declaration_src = found
+        print("Plan: manifest, beyan, biçim ön denetimi ve tek geçişli SHA-256/üye dizini (kaynak yalnız okunur)…", flush=True)
+        plan = plan_collection(Path(args.source), declaration_src, data_root=root, work_root=_collection_work_root(settings),
+                               provider=settings.cloud.provider, bucket=settings.cloud.bucket or "",
+                               authorization_path=Path(args.authorization) if args.authorization else None,
+                               progress=_progress_printer())
+    except (DirectRefused, CollectionError, decl.DeclarationError) as exc:
+        print(f"REDDEDİLDİ / REFUSED: {exc.code} {exc.detail}", file=sys.stderr)
+        return 2
+    print(json.dumps(plan.summary(), ensure_ascii=False, indent=2))
+    if not args.execute:
+        print("Kuru çalıştırma: hiçbir şey yüklenmedi / dry run: nothing uploaded (gerçek yayın için --execute)")
+        return 0
+    try:
+        store = _release_store_from_settings(settings)
+        result = publish_collection(store, plan, machine=machine_tag(), claim_ttl_hours=settings.cloud_intake.claim_ttl_hours,
+                                    progress=_progress_printer())
+        check = verify_collection(store, plan, full=args.verify == "full")
+        from .cloud.catalog_sync import sync_catalog
+
+        sync = sync_catalog(store, root, provider=settings.cloud.provider, bucket=settings.cloud.bucket or "",
+                            namespace=settings.cloud.namespace)
+    except DirectRefused as exc:
+        print(f"REDDEDİLDİ / REFUSED: {exc.code} {exc.detail}", file=sys.stderr)
+        return 2
+    except StorageError as exc:
+        print(f"BAŞARISIZ / FAILED: {exc.code} {exc.detail} — aynı komutla güvenle sürdürülür", file=sys.stderr)
+        return 3
+    print(f"SONUÇ / RESULT: {result['status']} {result['release_prefix']} · doğrulama {check['status']} ({check['readback_level']}) "
+          f"· katalog eşitleme {sync.status}")
+    return 0 if check["status"] == "PASS" else 2
+
+
+def _storage_collection_acceptance(args: argparse.Namespace) -> int:
+    from .cloud.e2e import run_collection_acceptance
+    from .objectstore.errors import StorageError
+    from .objectstore.factory import cloud_store
+    from .objectstore.smoke import LIVE_ENV
+    from .settings import load_settings
+
+    if not args.confirm_live or os.environ.get(LIVE_ENV) != "1":
+        print(f"Canlı test kapalı / live test disabled: hem --confirm-live hem {LIVE_ENV}=1 gerekir.", file=sys.stderr)
+        return 1
+    settings = load_settings()
+    try:
+        steps = run_collection_acceptance(cloud_store(settings, "publisher"), settings, source=Path(args.source),
+                                          spec=Path(args.spec), archives=args.archive)
+    except StorageError as exc:
+        print(f"Başlatılamadı / could not start: {exc.code} {exc.detail}", file=sys.stderr)
+        return 1
+    for s in steps:
+        print(f"  [{s.status}] {s.name} — {s.detail}")
+    ok = all(s.status in ("PASS", "INFO") for s in steps)
+    print("SONUÇ / RESULT:", "PASS" if ok else "FAIL")
+    return 0 if ok else 2
+
+
 def _storage_cloud_intake_toggle(args: argparse.Namespace) -> int:
     from .settings import load_settings, save_settings
 
@@ -547,6 +673,26 @@ def main(argv: list[str] | None = None) -> int:
     rh = storage_sub.add_parser("migration-rehearsal", help="CANLI taşıma provası (yalnız sentetik; yalıtılmış ad alanı)")
     rh.add_argument("--confirm-live", action="store_true")
     rh.set_defaults(func=_storage_migration_rehearsal)
+    dc = storage_sub.add_parser("declare-collection", help="Paket dışı kayıt beyanını manifest özetine bağla ve kaydet")
+    dc.add_argument("--source", required=True, help="Kaynak paket klasörü (değiştirilmez)")
+    dc.add_argument("--spec", required=True, help="Beyan alanları (JSON; paket kimliği ve manifest özeti otomatik eklenir)")
+    dc.set_defaults(func=_storage_declare_collection)
+    pc = storage_sub.add_parser("publish-collection",
+                                help="Raster koleksiyonunu kaynak klasöründen doğrudan yayımla (varsayılan kuru çalıştırma)")
+    pc.add_argument("--source", required=True, help="Kaynak paket klasörü (yalnız okunur; yerel tam kopya yapılmaz)")
+    pc.add_argument("--declaration", default=None, help="Beyan dosyası (varsayılan: veri kökündeki kayıtlı beyan)")
+    pc.add_argument("--authorization", default=None, help="RESTRICTED/UNKNOWN için bulut depolama yetki kaydı (JSON)")
+    pc.add_argument("--verify", choices=["full", "metadata"], default="full",
+                    help="Yayın sonrası ek denetim (yayın sırasında tam geri okuma her durumda yapılır)")
+    pc.add_argument("--execute", action="store_true", help="Gerçekten yayımla")
+    pc.set_defaults(func=_storage_publish_collection)
+    ca = storage_sub.add_parser("collection-acceptance",
+                                help="CANLI koleksiyon kabul testi: seçili gerçek arşivler, yalıtılmış ad alanı, aralıklı okuma")
+    ca.add_argument("--source", required=True)
+    ca.add_argument("--spec", required=True)
+    ca.add_argument("--archive", action="append", required=True, help="Manifestteki göreli arşiv yolu (birden çok verilebilir)")
+    ca.add_argument("--confirm-live", action="store_true")
+    ca.set_defaults(func=_storage_collection_acceptance)
 
     args = parser.parse_args(argv)
     return args.func(args)

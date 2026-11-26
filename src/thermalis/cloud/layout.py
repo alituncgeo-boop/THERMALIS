@@ -7,6 +7,7 @@
     releases/<SEG>/<SEG>/<sürüm>/...                  değişmez sürüm (bkz. objectstore.publication)
     catalog/commits/<SEG>/<SEG>/<sürüm>.json          merkezi katalog girdisi (işaretin kopyası; artımlı eşitleme)
     state/intake/<paket_id>/<manifest_özeti>.json     kabul durumu (talep/kilit, KABUL, RED)
+    state/publish/<SEG>/<SEG>/<sürüm>.json            kaynak klasöründen doğrudan yayının talebi ve sonucu
     state/datasets/<SEG>/<SEG>/releases.json          türetilmiş sürüm işaretçisi
 
 Yükleyici yalnız ``incoming/`` altına yazar. Yayın, katalog ve durum yalnız yayımlayıcı (bu bilgisayar)
@@ -25,6 +26,8 @@ READY_NAME = "THERMALIS_READY.json"
 AUTHORIZATION_NAME = "THERMALIS_AUTHORIZATION.json"
 CATALOG_COMMITS = "catalog/commits/"
 INTAKE_STATE = "state/intake/"
+PUBLISH_STATE = "state/publish/"
+PUBLISH_STATE_SCHEMA = "thermalis.direct-publication-state/1"
 RESERVED_PACKAGE_FILES = (READY_NAME, AUTHORIZATION_NAME)
 UPLOAD_SCHEMA = "thermalis.cloud-upload/1"
 INTAKE_STATE_SCHEMA = "thermalis.cloud-intake-state/1"
@@ -62,3 +65,10 @@ def catalog_entry_key(dataset_id: str, version: str) -> str:
 
 def intake_state_key(package_id: str, manifest_sha256: str) -> str:
     return validate_key(INTAKE_STATE + validate_package_id(package_id) + f"/{manifest_sha256[:32]}.json")
+
+
+def publish_state_key(dataset_id: str, version: str) -> str:
+    """Kaynak klasöründen doğrudan yayının talebi/sonucu (tek yayımlayıcı; yenilenebilir talep)."""
+    from ..data.catalog import dataset_segments
+
+    return validate_key(PUBLISH_STATE + "/".join(dataset_segments(dataset_id)) + f"/{version}.json")

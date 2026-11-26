@@ -88,6 +88,9 @@ class MaterializeRequest(BaseModel):
     """Bir veri seti sürümünün varlığını yerel, doğrulanmış bir yol olarak hazırla (bulutta ise önbelleğe indir)."""
     id: str
     version: str | None = None
+    # Raster koleksiyonu: tek sahnenin tek varlığı (arşiv üyesi adı veya bant kodu, ör. ST_B10). Yalnız o aralık indirilir.
+    item: str | None = Field(default=None, max_length=200)
+    asset: str | None = Field(default=None, max_length=300)
 
 
 class SemanticVerification(BaseModel):
@@ -546,11 +549,34 @@ def create_app(static_dir: Path | None = None, *, watch: bool | None = None) -> 
             except StorageError as exc:
                 raise _error(503, "cloud_unavailable") from exc
         try:
+            if payload.item or payload.asset:
+                if not (payload.item and payload.asset):
+                    raise _error(400, "item_and_asset_required")
+                from .cloud.access import materialize_member
+
+                return _contract(lambda: materialize_member(root, store, cache, payload.id, payload.version, payload.item,
+                                                            payload.asset))
             return _contract(lambda: materialize_asset(root, store, cache, payload.id, payload.version))
         except StorageError as exc:
             if exc.code in ("cache_capacity_exceeded", "insufficient_disk_space"):
                 raise _error(507, exc.code) from exc
+            if exc.code in ("item_not_found", "asset_not_found", "not_a_raster_collection"):
+                raise _error(404, exc.code) from exc
             raise _error(503, "cloud_unavailable") from exc
+
+    @app.get("/api/data/v1/collection")
+    def v1_collection(id: str, version: str | None = None, start: str | None = None, end: str | None = None,
+                      platform: str | None = None, max_cloud: float | None = None) -> dict:
+        from .data import contract
+
+        return _contract(lambda: contract.collection(_root(), id, version, start=start, end=end, platform=platform,
+                                                     max_cloud=max_cloud))
+
+    @app.get("/api/data/v1/collection/item")
+    def v1_collection_item(request: Request, id: str, item: str, version: str | None = None) -> dict:
+        from .data import contract
+
+        return _contract(lambda: contract.collection_item(_root(), id, version, item, authorized=authorized(request)))
 
     @app.get("/api/data/v1/diff")
     def v1_diff(id: str, to: str, from_: str = Query(alias="from")) -> dict:

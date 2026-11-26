@@ -38,7 +38,8 @@ from . import catalog, semantics
 from .integrity import sha256_file
 
 INDEX_FILE = "catalog_index.sqlite"
-INDEX_SCHEMA_VERSION = "2.2"  # 2.0: layer_versions… · 2.1: storage_locations (bulut) · 2.2: cloud_copies (taşıma)
+INDEX_SCHEMA_VERSION = "2.3"  # 2.0: layer_versions… · 2.1: storage_locations (bulut) · 2.2: cloud_copies (taşıma)
+# 2.3: collection_items / collection_assets (raster koleksiyonları: sahne, bant, CRS, kapsam, nodata, ölçek, kalite)
 
 
 _SEMVER = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
@@ -149,6 +150,22 @@ CREATE TABLE verifications(dataset_id TEXT, version TEXT, at TEXT, status TEXT, 
 CREATE TABLE ingest_runs(item_id TEXT PRIMARY KEY, package_name TEXT, dataset_id TEXT, version TEXT,
   technical_status TEXT, quality_status TEXT, audit_status TEXT, access_class TEXT, started_at TEXT,
   finished_at TEXT, result_path TEXT);
+CREATE TABLE collection_items(
+  dataset_id TEXT, version TEXT, layer_dataset_id TEXT, item_id TEXT, archive_path TEXT, archive_bytes INTEGER,
+  archive_sha256 TEXT, archive_format TEXT, datetime TEXT, acquisition_date TEXT, platform TEXT, sensor TEXT,
+  wrs_path TEXT, wrs_row TEXT, cloud_cover REAL, cloud_cover_land REAL, processing_level TEXT, collection_category TEXT,
+  product_id TEXT, scene_id TEXT, bbox_minx REAL, bbox_miny REAL, bbox_maxx REAL, bbox_maxy REAL, bbox_source TEXT,
+  package_qa_status TEXT, asset_count INTEGER, issues TEXT, properties TEXT, package_properties TEXT,
+  PRIMARY KEY(dataset_id, version, item_id));
+CREATE TABLE collection_assets(
+  dataset_id TEXT, version TEXT, item_id TEXT, member TEXT, byte_offset INTEGER, bytes INTEGER, sha256 TEXT,
+  role TEXT, band_code TEXT, stac_key TEXT, title TEXT, is_raster INTEGER, readable INTEGER, driver TEXT, dtype TEXT,
+  band_count INTEGER, width INTEGER, height INTEGER, epsg INTEGER, crs_name TEXT, res_x REAL, res_y REAL,
+  minx REAL, miny REAL, maxx REAL, maxy REAL, nodata TEXT, embedded_scale TEXT, embedded_offset TEXT,
+  scale REAL, add_offset REAL, scale_status TEXT, scale_source TEXT, add_offset_source TEXT, unit TEXT, unit_status TEXT,
+  compression TEXT, cloud_optimized INTEGER, overviews INTEGER, block TEXT, qa_bitfields INTEGER,
+  PRIMARY KEY(dataset_id, version, item_id, member));
+CREATE INDEX ix_items_date ON collection_items(dataset_id, version, acquisition_date);
 CREATE INDEX ix_findings_category ON quality_findings(dataset_id, version, category);
 CREATE INDEX ix_layers_dataset ON layers(dataset_id, version);
 CREATE INDEX ix_assets_version ON assets(dataset_id, version);
@@ -296,9 +313,14 @@ def metadata_completeness(record: dict[str, Any], quality: dict[str, Any],
                     f"{profile.get('valid_from') or 'yok'} / {profile.get('valid_to') or 'yok'} ({profile.get('source_file')})"))
     else:
         out.append(("temporal_coverage", "unknown", "pakette beyan yok"))
-    item("vector_fields", bool(layers) and all(l.get("fields") for l in layers.values()), f"{len(layers)} katman")
-    item("coded_domains", bool(record.get("domains")) or None, f"{len(record.get('domains', []))} domain")
-    item("data_dictionary", bool(dictionary), f"{len(dictionary)} satır")
+    if record.get("record_kind") == "raster_collection":
+        # Raster koleksiyonunda vektör alanı/kodlu alan/veri sözlüğü kavramı yoktur: eksik değil, uygulanamaz.
+        for name in ("vector_fields", "coded_domains", "data_dictionary"):
+            out.append((name, "not_applicable", "raster_collection"))
+    else:
+        item("vector_fields", bool(layers) and all(l.get("fields") for l in layers.values()), f"{len(layers)} katman")
+        item("coded_domains", bool(record.get("domains")) or None, f"{len(record.get('domains', []))} domain")
+        item("data_dictionary", bool(dictionary), f"{len(dictionary)} satır")
     if semantic_entries is not None:
         out.append(("semantic_definitions", *semantics_completeness(semantic_entries)))
     else:
@@ -398,6 +420,7 @@ def _index_version(con: sqlite3.Connection, folder: Path) -> list[dict[str, Any]
                          None if f.get("nullable") is None else int(bool(f["nullable"])), f.get("domain"),
                          f.get("null_count"), f.get("dictionary_type"), f.get("dictionary_alias")))
 
+    _index_collection(con, folder, record)
     for row in record.get("data_dictionary", []):
         con.execute("INSERT OR REPLACE INTO dictionary VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (ds, ver, row.get("dataset"), row.get("field"), row.get("alias"), row.get("type"), row.get("length"),
@@ -507,6 +530,50 @@ def _index_version(con: sqlite3.Connection, folder: Path) -> list[dict[str, Any]
     for code, detail, evidence in issues:
         con.execute("INSERT INTO record_issues VALUES (?,?,?,?,?)", (ds, ver, code, detail, evidence))
     return sem_entries
+
+
+def _text_or_none(value: Any) -> str | None:
+    return None if value is None else repr(value) if isinstance(value, float) else str(value)
+
+
+def _index_collection(con: sqlite3.Connection, folder: Path, record: dict[str, Any]) -> None:
+    """Raster koleksiyonu: sahne (öğe) ve varlık (bant/üye) satırları ``collection.json``'dan (kaynak beyanı korunur)."""
+    from .collection import read_collection
+
+    coll = read_collection(folder)
+    if coll is None:
+        return
+    ds, ver = record["dataset_id"], record["version"]
+    lid = layer_dataset_id(ds, coll.get("layer_name") or "ITEMS")
+    for it in coll.get("items", []):
+        p, arch, box = it.get("properties") or {}, it.get("archive") or {}, it.get("bbox_wgs84") or [None] * 4
+        pkgp = it.get("package_properties") or {}
+        con.execute("INSERT OR REPLACE INTO collection_items VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (ds, ver, lid, it["item_id"], arch.get("path"), arch.get("bytes"), arch.get("sha256"), arch.get("format"),
+                     p.get("datetime"), p.get("acquisition_date"), p.get("platform"), p.get("sensor"), p.get("wrs_path"),
+                     p.get("wrs_row"), p.get("cloud_cover"), p.get("cloud_cover_land"), p.get("processing_level"),
+                     p.get("collection_category"), p.get("product_id"), p.get("scene_id"), box[0], box[1], box[2], box[3],
+                     it.get("bbox_source"), pkgp.get("source_qa_status"), len(it.get("assets", [])),
+                     json.dumps(it.get("issues") or [], ensure_ascii=False), json.dumps(p, ensure_ascii=False, sort_keys=True),
+                     json.dumps(pkgp, ensure_ascii=False, sort_keys=True) if pkgp else None))
+        for a in it.get("assets", []):
+            r = a.get("raster") or {}
+            b0 = (r.get("bands") or [{}])[0]
+            crs, ext, res = r.get("crs") or {}, r.get("extent") or {}, r.get("resolution") or [None, None]
+            stac = a.get("stac") or {}
+            con.execute("INSERT OR REPLACE INTO collection_assets VALUES "
+                        "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (ds, ver, it["item_id"], a.get("member") or arch.get("path"), a.get("offset"), a.get("bytes"), a.get("sha256"),
+                         a.get("role"), a.get("band_code"), stac.get("stac_key"), stac.get("title"), int(bool(r)),
+                         None if not r else int(bool(r.get("readable"))), r.get("driver"), b0.get("dtype"), r.get("band_count"),
+                         r.get("width"), r.get("height"), crs.get("epsg"), crs.get("name"), res[0], res[1],
+                         ext.get("minx"), ext.get("miny"), ext.get("maxx"), ext.get("maxy"), _text_or_none(b0.get("nodata")),
+                         _text_or_none(b0.get("embedded_scale")), _text_or_none(b0.get("embedded_offset")),
+                         a.get("scale"), a.get("add_offset"), a.get("scale_status"), a.get("scale_source"), a.get("add_offset_source"),
+                         a.get("unit"), a.get("unit_status"), r.get("compression"),
+                         None if r.get("cloud_optimized") is None else int(bool(r.get("cloud_optimized"))),
+                         b0.get("overviews"), json.dumps(b0.get("block")) if b0.get("block") else None,
+                         int(bool(stac.get("classification:bitfields")))))
 
 
 def _index_runs(con: sqlite3.Connection, data_root: Path) -> None:

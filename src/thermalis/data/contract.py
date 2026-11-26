@@ -219,6 +219,8 @@ def descriptor(data_root: Path, dataset_id: str, version: str | None = None, *, 
                               "published": bool(s["published"]), "relation": "same_asset" if s["source_asset_id"] == layer["source_asset_id"] else "same_package"}
                              for s in siblings],
         "field_relations": joins,
+        "collection": {"kind": "raster_collection", "item_count": layer["feature_count"],
+                       "link": f"/api/data/v1/collection?id={dataset_id}&version={dsv}"} if layer["role"] == "raster_collection" else None,
         "usage_note": USAGE_NOTE,
         "links": _links(dataset_id, dsv),
     }
@@ -383,6 +385,81 @@ def access(data_root: Path, dataset_id: str, version: str | None = None, *, auth
             "storage": storage, "read_only": True, "conditions": conditions, "usage_note": USAGE_NOTE,
             # Bulut sürümünü yerelde okumak için: doğrulanmış önbellek kopyası (yalnız istenen varlık indirilir).
             "materialize": {"endpoint": "/api/data/v1/materialize", "method": "POST"} if (allowed and not local) else None}
+
+
+# --------------------------------------------------------------------------- raster koleksiyonları
+
+def _item_row(r: dict[str, Any]) -> dict[str, Any]:
+    out = {k: r[k] for k in ("item_id", "datetime", "acquisition_date", "platform", "sensor", "wrs_path", "wrs_row", "cloud_cover",
+                             "cloud_cover_land", "processing_level", "collection_category", "product_id", "scene_id",
+                             "package_qa_status", "asset_count")}
+    out["archive"] = {"path": r["archive_path"], "bytes": r["archive_bytes"], "sha256": r["archive_sha256"], "format": r["archive_format"]}
+    out["bbox_wgs84"] = None if r["bbox_minx"] is None else [r["bbox_minx"], r["bbox_miny"], r["bbox_maxx"], r["bbox_maxy"]]
+    out["bbox_source"] = r["bbox_source"]
+    out["issues"] = json.loads(r["issues"] or "[]")
+    return out
+
+
+def collection(data_root: Path, dataset_id: str, version: str | None = None, *, start: str | None = None, end: str | None = None,
+               platform: str | None = None, max_cloud: float | None = None) -> dict[str, Any]:
+    """Raster koleksiyonunun sahneleri (dizinden). Filtreler: tarih aralığı, platform, en çok bulut oranı (kaynak değeri)."""
+    layer = _layer(data_root, dataset_id, version)
+    ds, ver = layer["dataset_id"], layer["version"]
+    rows = _query(data_root, "SELECT * FROM collection_items WHERE layer_dataset_id=? AND version=? "
+                             "AND (? IS NULL OR acquisition_date>=?) AND (? IS NULL OR acquisition_date<=?) "
+                             "AND (? IS NULL OR platform=?) AND (? IS NULL OR cloud_cover<=?) ORDER BY acquisition_date, item_id",
+                  (dataset_id, ver, start, start, end, end, platform, platform, max_cloud, max_cloud))
+    if not rows and not _query(data_root, "SELECT 1 FROM collection_items WHERE layer_dataset_id=? AND version=? LIMIT 1", (dataset_id, ver)):
+        raise NotFound("not_a_raster_collection")
+    bands = _query(data_root, "SELECT band_code, role, dtype, nodata, scale, add_offset, scale_status, unit, epsg, res_x, res_y, "
+                              "cloud_optimized, COUNT(*) AS n FROM collection_assets WHERE dataset_id=? AND version=? AND is_raster=1 "
+                              "GROUP BY band_code, role, dtype, nodata, scale, add_offset, scale_status, unit, epsg, res_x, res_y, cloud_optimized "
+                              "ORDER BY band_code", (ds, ver))
+    dv = _one(_query(data_root, "SELECT quality_status, access_class FROM dataset_versions WHERE dataset_id=? AND version=?", (ds, ver)))
+    return {"contract": CONTRACT, "dataset_id": dataset_id, "version": layer["dataset_version"],
+            "version_id": version_id(dataset_id, layer["dataset_version"]), "quality_status": (dv or {}).get("quality_status"),
+            "access_class": (dv or {}).get("access_class"), "item_count": len(rows), "items": [_item_row(r) for r in rows],
+            "band_summary": bands,
+            "value_policy": "Kaynak değerler (DN) değiştirilmeden saklanır; scale/add_offset yalnız kaynak metadata beyanıdır ve "
+                            "uygulanmamıştır. Birim kaynakta beyan edilmemişse null.",
+            "links": {"item": f"/api/data/v1/collection/item?id={dataset_id}&version={layer['dataset_version']}&item={{item_id}}"}}
+
+
+def collection_item(data_root: Path, dataset_id: str, version: str | None, item_id: str, *, authorized: bool = False) -> dict[str, Any]:
+    """Tek sahne: tüm varlıklar (bant rolü, CRS, kapsam, çözünürlük, nodata, ölçek, QA) ve okuma yolu."""
+    from ..cloud.access import asset_location
+    from .catalog_index import storage_location
+    from .collection import read_collection
+
+    layer = _layer(data_root, dataset_id, version)
+    ds, ver = layer["dataset_id"], layer["version"]
+    row = _one(_query(data_root, "SELECT * FROM collection_items WHERE layer_dataset_id=? AND version=? AND item_id=?",
+                      (dataset_id, ver, item_id)))
+    if row is None:
+        raise NotFound("item_not_found")
+    dv = _one(_query(data_root, "SELECT * FROM dataset_versions WHERE dataset_id=? AND version=?", (ds, ver)))
+    allowed = authorized or dv["access_class"] == "PUBLIC"
+    _, folder = _physical(data_root, layer)
+    coll = read_collection(folder) or {}
+    item = next((i for i in coll.get("items", []) if i["item_id"] == item_id), None)
+    if item is None:
+        raise NotFound("item_not_found")
+    loc = {**(storage_location(data_root, ds, ver) or {"backend": "local"}), "record_dir": str(folder)}
+    assets = []
+    for a in item.get("assets", []):
+        entry = {k: v for k, v in a.items() if k != "stac"}
+        stac = a.get("stac") or {}
+        entry["stac"] = {k: v for k, v in stac.items() if k != "classification:bitfields"} or None
+        entry["qa_bitfields"] = stac.get("classification:bitfields")
+        entry["location"] = asset_location(data_root, loc, item, a) if allowed else None
+        assets.append(entry)
+    return {"contract": CONTRACT, "dataset_id": dataset_id, "version": layer["dataset_version"], "item": _item_row(row),
+            "properties": item.get("properties"), "package_properties": item.get("package_properties"),
+            "footprint_wgs84": item.get("footprint_wgs84"), "footprint_source": item.get("footprint_source"),
+            "interpreter": item.get("interpreter"), "assets": assets, "crs_wkt": coll.get("crs_wkt") if allowed else None,
+            "access": _access_conditions(dv, None, authorized),
+            "reading": "location.gdal_path: yerelde doğrudan; bulutta /vsisubfile/ + /vsis3/ (yetkili R2 kimliği) veya "
+                       "POST /api/data/v1/materialize {id, version, item, asset} ile yalnız üyenin doğrulanmış önbellek kopyası."}
 
 
 # --------------------------------------------------------------------------- sürüm farkları

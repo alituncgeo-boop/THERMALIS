@@ -29,6 +29,11 @@ thermalis-upload upload <paket>  ──►  incoming/<paket>/...           ◄�
 - **Disk:** önbellek sınırı 20 GB (ayrı); hazırlık alanı ayrı sayılır (varsayılan 200 GB sınır, paket başına en çok
   ~2x paket boyutu). Alan yetmezse paket ERTELENİR (reddedilmez). Windows yol sınırı aşılacaksa da ertelenir
   (`staging_path_too_long`): `settings.json → cloud_intake.staging_dir` için kısa bir klasör seçin (ör. `C:\TSTAGE`).
+- **Biçim ön denetimi (indirmeden önce):** işaretteki dosya listesi sınıflanır. Desteklenmeyen biçim (`adapter_required`)
+  veya kaynak klasöründen doğrudan yayımlanması gereken raster koleksiyonu (`raster_collection_direct_publication`)
+  indirilmez, talep alınmaz, kalıcı RED yazılmaz: `ADAPTER_REQUIRED` olarak ertelenir. Bkz. [raster-collections.md](raster-collections.md).
+- **Uzun işler:** bulut talepleri kalp atışıyla yenilenir (`heartbeat_at`); tarama kilidi kalp atışlıdır (30 dk sessizlikte
+  çökmüş sayılır). İzleyicinin bulut taraması ayrı iş parçacığındadır; yerel klasör taramasını bloklamaz.
 
 ## 2. Cloudflare yapılandırması (önerilen, ek ücretli hizmet yok)
 

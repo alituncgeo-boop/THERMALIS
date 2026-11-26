@@ -36,6 +36,7 @@ STALE_TMP_SECONDS = 3600
 STALE_LEASE_SECONDS = 24 * 3600
 WINDOWS_MAX_PATH = 259
 MANIFEST_NAME = ".thermalis-materialized.json"
+RANGE_CHUNK = 8 * 1024 * 1024
 
 
 class CacheFull(StorageError):
@@ -48,6 +49,7 @@ class CacheItem:
     relpath: str      # malzeme klasöründeki göreli yol ("/" ayırıcılı)
     sha256: str
     size: int
+    offset: int | None = None  # verilirse nesnenin [offset, offset+size) aralığı (ör. TAR üyesi); yalnız o aralık indirilir
 
 
 def default_cache_dir() -> Path:
@@ -205,11 +207,14 @@ class ObjectCache:
 
     # -- getirme ---------------------------------------------------------------------------------
     def fetch(self, store: ObjectStore, key: str, sha256: str, size: int, *, full_verify: bool = False,
-              cancel: CancelToken | None = None) -> Path:
+              cancel: CancelToken | None = None, offset: int | None = None) -> Path:
         """İçeriği önbelleğe getirir ve yolunu döndürür.
 
         Önbellekte varsa varsayılan denetim metadata düzeyindedir (boyut); ``full_verify=True`` ise
         SHA-256 yeniden hesaplanır ve bozuksa içerik yeniden indirilir.
+
+        ``offset`` verilirse yalnız ``[offset, offset+size)`` bayt aralığı parça parça (``Range`` istekleriyle)
+        indirilir ve aralığın SHA-256'sı beklenen özetle karşılaştırılır (ör. arşiv içindeki tek bir COG).
         """
         validate_key(key)
         path = self.blob_path(sha256)
@@ -228,13 +233,27 @@ class ObjectCache:
             digest = hashlib.sha256()
             written = 0
             try:
-                with store.open_read(key) as src, tmp.open("wb") as dst:
-                    for block in iter(lambda: src.read(CHUNK), b""):
-                        if cancel is not None:
-                            cancel.raise_if_cancelled(key)
-                        digest.update(block)
-                        written += len(block)
-                        dst.write(block)
+                with tmp.open("wb") as dst:
+                    if offset is None:
+                        with store.open_read(key) as src:
+                            for block in iter(lambda: src.read(CHUNK), b""):
+                                if cancel is not None:
+                                    cancel.raise_if_cancelled(key)
+                                digest.update(block)
+                                written += len(block)
+                                dst.write(block)
+                    else:
+                        pos, end = offset, offset + size
+                        while pos < end:
+                            if cancel is not None:
+                                cancel.raise_if_cancelled(key)
+                            block = store.read_range(key, pos, min(pos + RANGE_CHUNK, end) - 1)
+                            if not block:
+                                raise ChecksumMismatch("range_read_returned_no_data", key=key)
+                            digest.update(block)
+                            written += len(block)
+                            dst.write(block)
+                            pos += len(block)
                     dst.flush()
                     os.fsync(dst.fileno())
                 if written != size or digest.hexdigest() != sha256:
@@ -274,7 +293,7 @@ class ObjectCache:
                 cm.__enter__()
                 leases.append(cm)
             for item in items:
-                self.fetch(store, item.key, item.sha256, item.size, full_verify=full_verify, cancel=cancel)
+                self.fetch(store, item.key, item.sha256, item.size, full_verify=full_verify, cancel=cancel, offset=item.offset)
             with self._lock:
                 if not self._materialized_ok(folder, items):
                     self._build(folder, items, manifest)

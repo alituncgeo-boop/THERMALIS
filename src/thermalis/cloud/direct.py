@@ -96,8 +96,10 @@ def plan_collection(source_root: Path, declaration: dict[str, Any] | Path, *, da
 
     ``package``: önceden yüklenmiş paket görünümü (ör. kabul testinin kopyasız alt kümesi); verilmezse klasörden okunur.
     """
+    from ..data.bundle import build_bundle_records, is_bundle, load_bundle
+
     try:
-        pkg = package or load_source_package(Path(source_root))
+        pkg = package or (load_bundle(Path(source_root)) if is_bundle(Path(source_root)) else load_source_package(Path(source_root)))
     except CollectionError as exc:
         raise DirectRefused(exc.code, exc.detail) from None
     try:
@@ -121,8 +123,9 @@ def plan_collection(source_root: Path, declaration: dict[str, Any] | Path, *, da
     op = operation_id_for(ds, ver, pkg.manifest_sha256)
     work = work_dir_for(work_root, pkg.package_id, pkg.manifest_sha256)
     cancel_fn = (lambda: cancel.raise_if_cancelled(None)) if cancel is not None else None
+    builder = build_bundle_records if pkg.kind == "zip_bundle" else build_records
     try:
-        built = build_records(pkg, d, work, ingest_id=op, cancel=cancel_fn, progress=progress, log=log)
+        built = builder(pkg, d, work, ingest_id=op, cancel=cancel_fn, progress=progress, log=log)
     except CollectionError as exc:
         raise DirectRefused(exc.code, exc.detail) from None
     records = dict(built.records)

@@ -45,6 +45,24 @@ def asset_items(commit: dict[str, Any], prefix: str, asset_path: str) -> list[Ca
     return sorted(items, key=lambda i: i.relpath)
 
 
+def bundle_items(folder: Path, prefix: str, archive: str, member: str) -> list[CacheItem]:
+    """Kaynak paketi arşivindeki bir üyenin (veya GDB gibi bir klasörün) önbellek öğeleri.
+
+    Her üye için yalnız sıkıştırılmış veri aralığı okunur (``data_offset``, ``compressed_size``); deflate ise yerelde açılır
+    ve açılmış içerik ``records/bundle.json``'daki (iç manifestle doğrulanmış) SHA-256 ile karşılaştırılır.
+    """
+    from ..data.bundle import read_bundle
+
+    bundle = read_bundle(folder)
+    if bundle is None or bundle.get("archive") != archive:
+        raise StorageError("bundle_record_missing", key=archive)
+    key = f"{prefix}payload/{archive}"
+    items = [CacheItem(key, m["name"], m["sha256"], m["size"], offset=m["data_offset"],
+                       codec=None if m["method"] == "stored" else m["method"], stored_size=m["compressed_size"])
+             for m in bundle["members"] if m["name"] == member or m["name"].startswith(member + "/")]
+    return sorted(items, key=lambda i: i.relpath)
+
+
 def materialize_asset(data_root: Path, store: ObjectStore | None, cache: ObjectCache | None, layer_dataset_id: str,
                       version: str | None = None, *, disk_free: Callable[[Path], int] | None = None) -> dict[str, Any]:
     from ..data.catalog_index import storage_location
@@ -55,13 +73,23 @@ def materialize_asset(data_root: Path, store: ObjectStore | None, cache: ObjectC
     if asset is None:
         raise StorageError("asset_not_recorded", key=layer_dataset_id)
     loc = storage_location(data_root, layer["dataset_id"], layer["version"]) or {"backend": "local"}
+    archive, _, member = asset["path"].partition(".zip/")
     if loc["backend"] == "local":
+        if member:
+            from ..data.formats.zip_index import vsizip
+
+            return {"backend": "local", "path": vsizip((folder / "payload" / f"{archive}.zip").as_posix(), member),
+                    "materialized": False, "dataset_version": layer["dataset_version"]}
         return {"backend": "local", "path": str(folder / "payload" / asset["path"]), "materialized": False,
                 "dataset_version": layer["dataset_version"]}
     if store is None or cache is None:
         raise StorageError("cloud_store_not_available", key=layer_dataset_id)
     commit = json.loads((folder / "_COMMIT.json").read_text(encoding="utf-8"))
-    items = asset_items(commit, loc["prefix"], asset["path"])
+    if member:
+        items = bundle_items(folder, loc["prefix"], f"{archive}.zip", member)
+        asset = {**asset, "path": member}  # malzeme klasöründe arşiv içi yol korunur
+    else:
+        items = asset_items(commit, loc["prefix"], asset["path"])
     if not items:
         raise StorageError("asset_not_in_commit", key=asset["path"])
     total = sum(i.size for i in items)

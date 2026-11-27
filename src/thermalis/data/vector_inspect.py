@@ -25,11 +25,13 @@ def gdal_available() -> tuple[bool, str]:
     return True, gdal.__version__
 
 
-def _open(path: Path):
+def _open(path: "Path | str"):
+    """Yerel yol (``Path``) veya GDAL sanal yolu (``str``; ör. ``/vsizip/<arşiv>/<x>.gdb``) — sanal yol olduğu gibi verilir."""
     from osgeo import gdal
 
     gdal.UseExceptions()
-    return gdal.OpenEx(str(path), gdal.OF_VECTOR | gdal.OF_READONLY, allowed_drivers=["OpenFileGDB"])
+    return gdal.OpenEx(path if isinstance(path, str) else str(path), gdal.OF_VECTOR | gdal.OF_READONLY,
+                       allowed_drivers=["OpenFileGDB"])
 
 
 def normalize_esri_wkt(wkt: str) -> str:

@@ -304,6 +304,8 @@ def metadata_completeness(record: dict[str, Any], quality: dict[str, Any],
     temporal = src.get("temporal_coverage")
     if isinstance(temporal, str) and temporal.lower() == "not_applicable":
         out.append(("temporal_coverage", "not_applicable", "paket beyanı"))
+    elif isinstance(temporal, dict) and "semantics" in temporal and temporal.get("start") is None and temporal.get("end") is None:
+        out.append(("temporal_coverage", "unknown", json.dumps(temporal, ensure_ascii=False)))  # anlamı beyanlı, tarihi kaynakta yok
     elif temporal:
         out.append(("temporal_coverage", "present", json.dumps(temporal, ensure_ascii=False)))
     elif profile and profile.get("temporal_currency_year"):
@@ -317,6 +319,15 @@ def metadata_completeness(record: dict[str, Any], quality: dict[str, Any],
         # Raster koleksiyonunda vektör alanı/kodlu alan/veri sözlüğü kavramı yoktur: eksik değil, uygulanamaz.
         for name in ("vector_fields", "coded_domains", "data_dictionary"):
             out.append((name, "not_applicable", "raster_collection"))
+    elif record.get("record_kind") == "source_bundle":
+        schema_layers = {n: l for n, l in layers.items() if l.get("geometry_type") != "Raster"}
+        if schema_layers:
+            item("vector_fields", all(l.get("fields") for l in schema_layers.values()), f"{len(schema_layers)} vektör/tablo katmanı")
+        else:
+            out.append(("vector_fields", "not_applicable", "raster only"))
+        item("coded_domains", bool(record.get("domains")) or None, f"{len(record.get('domains', []))} domain")
+        out.append(("data_dictionary", "present" if any("package/DATA_DICTIONARY" in d for d in docs) else "unknown",
+                    ", ".join(d for d in docs if "DATA_DICTIONARY" in d) or "paket sözlüğü bulunamadı"))
     else:
         item("vector_fields", bool(layers) and all(l.get("fields") for l in layers.values()), f"{len(layers)} katman")
         item("coded_domains", bool(record.get("domains")) or None, f"{len(record.get('domains', []))} domain")
@@ -383,12 +394,16 @@ def _index_version(con: sqlite3.Connection, folder: Path) -> list[dict[str, Any]
     con.execute("INSERT OR IGNORE INTO datasets VALUES (?,?,?,?,?,?)", (ds, "dataset", None, record.get("family"), None, None))
 
     # Varlıklar: manifest dosyaları + kapsayıcılar (ör. .gdb).
-    containers = {s[len("payload/"):] if s.startswith("payload/") else s for s in record.get("storage", {}).get("vector_sources", [])}
+    containers = {s[len("payload/"):] if s.startswith("payload/") else s: "filegdb_vector"
+                  for s in record.get("storage", {}).get("vector_sources", [])}
+    # Kaynak paketi (ZIP) içindeki kapsayıcılar: GDB klasörü, raster, tablo (arşiv çıkarılmadan; bkz. records/bundle.json)
+    for c in record.get("storage", {}).get("containers", []) or []:
+        containers[c["path"]] = c.get("format")
     container_ids = {}
     for c in sorted(containers):
         aid = asset_id(ds, ver, c)
         container_ids[c] = aid
-        con.execute("INSERT INTO assets VALUES (?,?,?,?,?,?,?,?,?)", (aid, ds, ver, c, "container", "filegdb_vector", None, None, None))
+        con.execute("INSERT INTO assets VALUES (?,?,?,?,?,?,?,?,?)", (aid, ds, ver, c, "container", containers[c], None, None, None))
         con.execute("INSERT INTO relations VALUES (?,?,?,?,?,?)", (aid, "part_of_version", f"{ds}@{ver}", ds, ver, "version.json storage.vector_sources"))
     documents = set(record.get("documents", []))
     for f in integrity.get("files", []):

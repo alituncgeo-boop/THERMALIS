@@ -463,6 +463,14 @@ def _collection_work_root(settings) -> Path:
     return staging_root(settings) / "collections"
 
 
+def _load_any_package(root: Path):
+    """Manifestli paket (PACKAGE/MANIFEST.json) veya ZIP kaynak paketi (arşiv + SHA-256 yan dosyası)."""
+    from .data.bundle import is_bundle, load_bundle
+    from .data.collection import load_source_package
+
+    return load_bundle(root) if is_bundle(root) else load_source_package(root)
+
+
 def _storage_declare_collection(args: argparse.Namespace) -> int:
     """Paket dışı beyanı manifest özetine bağlayıp kaydeder (kaynak paket değişmez)."""
     from datetime import datetime, timezone
@@ -473,7 +481,7 @@ def _storage_declare_collection(args: argparse.Namespace) -> int:
 
     settings = load_settings()
     try:
-        pkg = load_source_package(Path(args.source))
+        pkg = _load_any_package(Path(args.source))
         spec = json.loads(Path(args.spec).read_text(encoding="utf-8-sig"))
         if not isinstance(spec, dict):
             raise decl.DeclarationError("declaration_schema_invalid")
@@ -507,7 +515,7 @@ def _storage_publish_collection(args: argparse.Namespace) -> int:
         if args.declaration:
             declaration_src = Path(args.declaration)
         else:
-            pkg = load_source_package(Path(args.source))
+            pkg = _load_any_package(Path(args.source))
             found = decl.find(root, pkg.package_id, pkg.manifest_sha256)
             if found is None:
                 raise decl.DeclarationError("declaration_missing", "thermalis storage declare-collection")

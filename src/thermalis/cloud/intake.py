@@ -47,7 +47,7 @@ from .claims import ClaimLost, LocalLock, RenewableClaim
 
 MIB = 1024 * 1024
 LOCK_STALE_SECONDS = 30 * 60  # kalp atışı kesilmiş tarama kilidi bu süreden sonra çökmüş sayılır
-PREFLIGHT_DEFERRALS = ("adapter_required", "raster_collection_direct_publication")
+PREFLIGHT_DEFERRALS = ("adapter_required", "raster_collection_direct_publication", "source_bundle_direct_publication")
 STAGING_MARGIN = 256 * MIB
 WINDOWS_PATH_LIMIT = 250  # MAX_PATH (260) altında güvenli pay; GDAL uzun yol önekini her yerde desteklemez
 TERMINAL = ("ACCEPTED", "REJECTED")
@@ -278,10 +278,11 @@ class CloudIntake:
         # biçim kalıcı RED değildir: paket bulutta kalır, ADAPTER_REQUIRED olarak ertelenir (bağdaştırıcı gelince yeniden denenir).
         pf = preflight([f["path"] for f in marker["files"]])
         if pf.route != "vector_package":
-            code = "raster_collection_direct_publication" if pf.route == "raster_collection" else "adapter_required"
+            code = {"raster_collection": "raster_collection_direct_publication",
+                    "zip_bundle": "source_bundle_direct_publication"}.get(pf.route or "", "adapter_required")
             detail = (f"{json.dumps(pf.formats, sort_keys=True)}; " +
                       ("kaynak klasöründen doğrudan yayın: thermalis storage publish-collection"
-                       if pf.route == "raster_collection" else f"{', '.join(pf.reasons)}; {pf.unsupported[:5]}"))
+                       if pf.route in ("raster_collection", "zip_bundle") else f"{', '.join(pf.reasons)}; {pf.unsupported[:5]}"))
             self._local(package_id, "ADAPTER_REQUIRED", detail[:1000], code, **base, preflight=pf.as_dict())
             return PackageOutcome(package_id, "DEFERRED", code, detail[:300], marker.get("dataset_id"), marker.get("version"))
         try:

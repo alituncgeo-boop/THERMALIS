@@ -6,11 +6,13 @@ harcanmaz ve kalıcı RED yazılmaz; paket ``ADAPTER_REQUIRED`` olarak ERTELENİ
 Rotalar:
 - ``vector_package``      File Geodatabase içeren mevcut paket sözleşmesi (RELEASE_STATUS.json) → mevcut kayıt iş akışı
 - ``raster_collection``   TAR/GeoTIFF kaynakları → paket dışı beyan + doğrudan yayın (yerel tam kopya yok)
+- ``zip_bundle``          ZIP aktarım paketi (arşiv + SHA-256 yan dosyası + iç manifest) → beyan + doğrudan yayın
 - ``None``                desteklenmeyen biçim → bağdaştırıcı gerekli
 """
 
 from __future__ import annotations
 
+import collections
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from typing import Iterable
@@ -73,8 +75,19 @@ UNSUPPORTED = {"compressed_tar": "compressed_tar_not_range_readable", "zip_archi
                "zarr": "zarr_requires_adapter", "parquet": "parquet_requires_adapter"}
 
 
+def is_bundle_listing(paths: list[str]) -> bool:
+    """ZIP aktarım paketi: kökte tek arşiv + ``<ad>_ZIP_SHA256.txt`` yan dosyası (içerik ZIP içindedir)."""
+    top_zips = [p for p in paths if "/" not in p and p.lower().endswith(".zip")]
+    sidecars = [p for p in paths if "/" not in p and p.endswith("_ZIP_SHA256.txt")]
+    return len(top_zips) == 1 and len(sidecars) == 1 and not any(p.startswith("PACKAGE/") for p in paths)
+
+
 def preflight(paths: Iterable[str], *, driver_available=None) -> Preflight:
     paths = list(paths)
+    if is_bundle_listing(paths):
+        kinds = {p: ("zip_bundle_archive" if p.lower().endswith(".zip") else "document") for p in paths}
+        return Preflight(route="zip_bundle", formats=dict(sorted(collections.Counter(kinds.values()).items())),
+                         data_files=1)
     kinds = {p: classify(p, driver_available=driver_available) for p in paths}
     counts = Counter(kinds.values())
     result = Preflight(route=None, formats=dict(sorted(counts.items())))

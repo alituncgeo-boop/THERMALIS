@@ -72,6 +72,10 @@ class SourcePackage:
     extra_files: list[str] = field(default_factory=list)  # manifestin kendisi gibi özetlenmeyen paket dosyaları
     # Alt küme görünümü: girdinin gerçek konumu (kopya YOK; kabul testleri asıl kaynak dosyaları okur).
     locations: dict[str, Path] = field(default_factory=dict)
+    # "manifest_package" (PACKAGE/MANIFEST.json) | "zip_bundle" (ZIP + SHA-256 yan dosyası + iç manifest)
+    kind: str = "manifest_package"
+    archive: str | None = None
+    checksum_origin: dict[str, str] = field(default_factory=dict)
 
     def path(self, rel: str) -> Path:
         return self.locations.get(rel) or self.root.joinpath(*rel.split("/"))

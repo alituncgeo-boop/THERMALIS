@@ -113,11 +113,12 @@ def plan_collection(source_root: Path, declaration: dict[str, Any] | Path, *, da
         raise DirectRefused("already_registered_locally", f"{ds} {ver}: depolar arası yineleme yapılmaz")
     authorization = None
     if access in auth.NEEDS_AUTHORIZATION:
-        if authorization_path is None:
-            raise DirectRefused("authorization_required", access)
-        try:
-            authorization = auth.validate(auth.load(authorization_path), dataset_id=ds, version=ver, package_id=pkg.package_id,
-                                          manifest_sha256=pkg.manifest_sha256, access_class=access, provider=provider, bucket=bucket)
+        from .grants import authorization_for
+
+        try:  # açık kayıt dosyası (geriye uyumlu) ya da kapsayan merkezi operatör yetkisi — yeniden onay istenmez
+            authorization = authorization_for(data_root, dataset_id=ds, version=ver, package_id=pkg.package_id,
+                                              manifest_sha256=pkg.manifest_sha256, access_class=access, provider=provider,
+                                              bucket=bucket, authorization_path=authorization_path)
         except auth.AuthorizationError as exc:
             raise DirectRefused(exc.code, exc.detail) from None
     op = operation_id_for(ds, ver, pkg.manifest_sha256)

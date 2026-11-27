@@ -311,7 +311,12 @@ def test_catalog_lists_layers_as_separate_datasets_with_real_metadata(incoming: 
     assert d["package_version"] == "1.0.0-rc1" and d["format_key"] == "filegdb_vector"
     assert d["category"] == "administrative_boundaries" and d["place"] == "Istanbul"
     assert d["source_institution"] == "Test Kurumu" and d["description"] == "İlçe sınırları verisi"  # HTML yorumlanmadan metne
+    entries = d["temporal"].pop("entries")
     assert d["temporal"] == {"state": "partial", "currency_year": "2026", "valid_from": None, "valid_to": None}
+    # Kaynak beyanı ayrı bir zaman girdisidir; kayıt tarihi asla kaynak tarihi olarak görünmez.
+    assert {"kind": "source_reference_date", "start_value": "2026", "end_value": None, "continuity": "single_date",
+            "status": "SOURCE_DECLARED", "scope": "dataset"} in entries
+    assert all(d["registered_at"][:10] not in str(e["start_value"]) for e in entries)
     assert d["quality_status"] == "QA_CONDITIONAL" and d["access_class"] == "RESTRICTED"
     assert d["integrity"]["status"] == "PASS" and d["integrity"]["last_successful_at"] == d["registered_at"]
     assert d["spatial_extent"]["crs"] == "ITRF_96_UTM_Zone_35N"
@@ -336,7 +341,7 @@ def test_unknown_metadata_stays_unknown(incoming: Path, data_root: Path, tmp_pat
     client = _client(tmp_path, monkeypatch, data_root)
     item = client.get("/api/data/catalog").json()["datasets"][0]
     assert item["category"] is None and item["place"] is None and item["description"] is None
-    assert item["temporal"] == {"state": "unknown", "currency_year": None, "valid_from": None, "valid_to": None}
+    assert item["temporal"] == {"state": "unknown", "currency_year": None, "valid_from": None, "valid_to": None, "entries": []}
     assert item["source_institution"] == "Test Kurumu"  # paketin RELEASE_STATUS.data_owner beyanı
     assert item["metadata_completeness"]["missing"] >= 2  # lisans belgesi ve anlamsal tanımlar yok
 

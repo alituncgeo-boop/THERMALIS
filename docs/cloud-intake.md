@@ -117,7 +117,9 @@ kimlik bilgisi varlığı (değer asla gösterilmez). Katalog satırları ve ayr
 `docs/templates/cloud-authorization.example.json`. Kayıt paketin erişim sınıfını **değiştirmez**; yalnız belirli
 sağlayıcı + kovada saklanmaya veri sahibinin izin verdiğini belgeler ve pakete (MANIFEST SHA-256) bağlıdır.
 `storage.bucket` kalıcı yayın kovasıdır (`thermalis-data-dev`). Kayıt yükleyicide ve kabulde ayrı ayrı doğrulanır ve
-sürümün `records/THERMALIS_AUTHORIZATION.json` dosyası olarak saklanır.
+sürümün `records/THERMALIS_AUTHORIZATION.json` dosyası olarak saklanır. Paket kendi yetki kaydını taşımıyorsa kabul,
+sürümü açıkça kapsayan etkin bir merkezî operatör yetkisini (`storage grant`) kullanır; `document_reference` artık isteğe
+bağlıdır (bkz. [data-hardening.md](data-hardening.md)).
 
 ## 6. Faz 05 — HD01 taşıma prosedürü (BU FAZDA YAPILMADI)
 

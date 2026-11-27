@@ -75,6 +75,7 @@ class SyncResult:
     release_count: int = 0
     committed_bytes: int = 0
     error: str | None = None
+    ledger: dict[str, Any] = field(default_factory=dict)
 
 
 def _drop(folder: Path) -> None:
@@ -254,6 +255,18 @@ def sync_catalog(store: ObjectStore, data_root: Path, *, provider: str, bucket: 
     except StorageError as exc:
         result.status = "offline" if exc.retryable else "error"
         result.error = f"{exc.code}:{exc.detail}" if exc.detail else exc.code
+    # Bulut defteri (metadata düzeltmeleri, yetkiler, yetkili kaynak kararları, anlamsal doğrulama ve yeniden doğrulama
+    # geçmişi): yalnız katalog eşitlemesi başarılıysa; hata katalog eşitlemesini bozmaz, ayrıca raporlanır.
+    ledger_changed = False
+    if result.status == "ok":
+        from . import ledger
+
+        result.ledger = ledger.safe_sync(store, data_root)
+        if result.ledger.get("status") != "ok":
+            result.problems.append(f"ledger:{result.ledger.get('error')}")
+        restored = result.ledger.get("restored") or {}
+        ledger_changed = bool(result.ledger.get("pulled") or result.ledger.get("exported") or restored.get("semantic_restored")
+                              or restored.get("reverifications_restored"))
     folders = cloud_record_folders(data_root)
     locations = []
     for folder in folders:
@@ -272,7 +285,7 @@ def sync_catalog(store: ObjectStore, data_root: Path, *, provider: str, bucket: 
         new_state["last_success_at"] = now
         new_state["entries"] = {**known, **seen} if not full else {**known, **seen}
     write_json_atomic(cloud_dir(data_root) / SYNC_STATE_NAME, new_state)
-    if rebuild and result.mirrored:
+    if rebuild and (result.mirrored or ledger_changed):
         from ..data.catalog_index import rebuild_index
 
         rebuild_index(data_root)

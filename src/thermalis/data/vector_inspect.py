@@ -78,6 +78,7 @@ def _inspect(ds, expected_wkt: str | None) -> dict[str, Any]:
                     "width": fd.GetWidth(),
                     "nullable": bool(fd.IsNullable()),
                     "domain": fd.GetDomainName() or None,
+                    "default": fd.GetDefault(),  # kaynakta tanımlı varsayılan (yoksa None)
                 }
             )
         null_counts = {f["name"]: 0 for f in fields}
@@ -118,14 +119,73 @@ def _inspect(ds, expected_wkt: str | None) -> dict[str, Any]:
         srs = None
         layer = None
 
+    domains = _domains(ds)
+    _assess_coded_values(ds, layers, domains)
+    return {"layers": layers, "domains": domains}
+
+
+_SPLIT = {"OFDSP_DEFAULT_VALUE": "default_value", "OFDSP_DUPLICATE": "duplicate", "OFDSP_GEOMETRY_RATIO": "geometry_ratio"}
+_MERGE = {"OFDMP_DEFAULT_VALUE": "default_value", "OFDMP_SUM": "sum", "OFDMP_GEOMETRY_WEIGHTED": "geometry_weighted"}
+MAX_UNEXPECTED = 50  # alan başına raporlanan en çok farklı tanımsız kod (sayımlar tam)
+
+
+def _policy(value: int, table: dict[str, str]) -> str | None:
+    from osgeo import ogr
+
+    return next((label for name, label in table.items() if getattr(ogr, name, None) == value), None)
+
+
+def _domains(ds) -> dict[str, Any]:
+    """Kaynak GDB domainleri: kodlu, aralık ve desen; alan türü, sınırlar, bölme/birleştirme politikaları."""
+    from osgeo import ogr
+
     domains: dict[str, Any] = {}
     for name in ds.GetFieldDomainNames() or []:
         domain = ds.GetFieldDomain(name)
-        entry: dict[str, Any] = {"description": domain.GetDescription(), "type": domain.GetDomainType()}
-        if domain.GetDomainType() == ogr.OFDT_CODED:
+        kind = domain.GetDomainType()
+        entry: dict[str, Any] = {"description": domain.GetDescription(), "type": kind,
+                                 "field_type": FIELD_TYPE_NAMES.get(domain.GetFieldType(), str(domain.GetFieldType())),
+                                 "split_policy": _policy(domain.GetSplitPolicy(), _SPLIT),
+                                 "merge_policy": _policy(domain.GetMergePolicy(), _MERGE)}
+        if kind == ogr.OFDT_CODED:
             entry["coded_values"] = {str(k): v for k, v in domain.GetEnumeration().items()}
+        elif kind == ogr.OFDT_RANGE:
+            numeric = domain.GetFieldType() in (ogr.OFTInteger, ogr.OFTInteger64, ogr.OFTReal)
+            entry["min"] = domain.GetMinAsDouble() if numeric else domain.GetMinAsString()
+            entry["max"] = domain.GetMaxAsDouble() if numeric else domain.GetMaxAsString()
+            entry["min_inclusive"], entry["max_inclusive"] = bool(domain.IsMinInclusive()), bool(domain.IsMaxInclusive())
+        elif kind == ogr.OFDT_GLOB:
+            entry["glob"] = domain.GetGlob()
         domains[name] = entry
-    return {"layers": layers, "domains": domains}
+    return domains
+
+
+def _assess_coded_values(ds, layers: dict[str, Any], domains: dict[str, Any]) -> None:
+    """Kodlu domainli alanlarda tanımsız kodları SAYAR (anlam uydurulmaz; yalnız rapor). NULL ayrı sayılır."""
+    for lname, info in layers.items():
+        targets = {f["name"]: domains[f["domain"]]["coded_values"] for f in info["fields"]
+                   if f.get("domain") in domains and "coded_values" in domains[f["domain"]]}
+        if not targets:
+            continue
+        layer = ds.GetLayerByName(lname)
+        defn = layer.GetLayerDefn()
+        index = {name: defn.GetFieldIndex(name) for name in targets}
+        found: dict[str, dict[str, int]] = {name: {} for name in targets}
+        layer.ResetReading()
+        for feature in layer:
+            for name, i in index.items():
+                if not feature.IsFieldSetAndNotNull(i):
+                    continue
+                value = feature.GetFieldAsString(i)
+                if value not in targets[name]:
+                    bucket = found[name]
+                    if value in bucket or len(bucket) < MAX_UNEXPECTED:
+                        bucket[value] = bucket.get(value, 0) + 1
+        feature = layer = None
+        info["coded_value_assessment"] = {
+            name: {"status": "UNEXPECTED_CODES_PRESENT" if found[name] else "ALL_CODES_DEFINED",
+                   "unexpected": found[name], "note": "undefined codes are reported, never given a meaning"}
+            for name in targets}
 
 
 CONTENT_ID_ALGORITHM = "lc1-sha256-multiset"

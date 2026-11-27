@@ -17,8 +17,11 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA = "thermalis.cloud-authorization/1"
+# ``document_reference`` İSTEĞE BAĞLIDIR: operatör beyanı (``evidence_type: operator_attestation``) geçerli bir kanıt
+# türüdür; bir belge yalnız gerçekten varsa (veya dış bir zorunluluk gerektiriyorsa) referans verilir. Eski kayıtlar
+# (belge alanı dolu) aynen geçerlidir.
 REQUIRED = ("schema", "dataset_id", "version", "package_id", "manifest_sha256", "access_class", "scope", "storage",
-            "granted_by", "authority", "document_reference", "granted_at")
+            "granted_by", "authority", "granted_at")
 NEEDS_AUTHORIZATION = ("RESTRICTED", "UNKNOWN")
 
 

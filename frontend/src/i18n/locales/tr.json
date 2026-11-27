@@ -169,7 +169,94 @@
     },
     "temporal": {
       "currency": "Güncellik yılı {{year}} · {{range}}",
-      "range_not_provided": "geçerlilik aralığı sağlanmamış"
+      "range_not_provided": "geçerlilik aralığı sağlanmamış",
+      "entry": "{{kind}}: {{span}}",
+      "entry_unknown": "{{kind}}: bilinmiyor",
+      "kind": {
+        "observation_period": "Gözlem dönemi",
+        "acquisition_date": "Edinim tarih(ler)i",
+        "acquisition_span": "Edinim aralığı",
+        "source_reference_date": "Kaynak referans tarihi",
+        "demographic_reference_year": "Demografik referans yılı",
+        "administrative_geography_vintage": "İdari sınır dönemi",
+        "survey_date": "Saha/anket tarihi",
+        "product_generation_date": "Ürün üretim tarihi",
+        "publication_date": "Yayın tarihi",
+        "validity_period": "Geçerlilik dönemi"
+      },
+      "continuity": {
+        "continuous": "Sürekli",
+        "discontinuous": "Kesintili",
+        "selected_acquisitions": "Seçili edinimler (sürekli değil)",
+        "single_date": "Tek tarih",
+        "unknown": "Bilinmiyor"
+      }
+    },
+    "science": {
+      "title": "Bilimsel bağlam",
+      "temporal": "Zaman metadata'sı",
+      "temporal_note": "Her tarih anlamıyla birlikte kaydedilir. Bilinmeyen tarih bilinmiyor olarak kalır; kayıt tarihi asla kaynak tarihi yerine kullanılmaz.",
+      "scope_dataset": "Tüm sürüm",
+      "col": {
+        "kind": "Anlam",
+        "value": "Değer",
+        "continuity": "Süreklilik",
+        "status": "Durum",
+        "scope": "Kapsam",
+        "basis": "Kanıt",
+        "by": "Kaydeden",
+        "paths": "Değişen alanlar",
+        "applied": "Uygulandı",
+        "role": "Rol",
+        "same_fingerprint": "Aynı paket parmak izi"
+      },
+      "status": {
+        "SOURCE_DATA": "Kaynak veriden",
+        "SOURCE_DECLARED": "Kaynak beyanı",
+        "INFERRED_CORROBORATED": "Çıkarım (doğrulanmış)",
+        "UNKNOWN": "Bilinmiyor",
+        "UNVERIFIED": "Doğrulanmadı",
+        "INHERITED_DOCUMENTED": "Devralınmış (işlem kayıtlarında belgeli)",
+        "EMBEDDED": "Rastere gömülü",
+        "VERIFIED": "Doğrulandı",
+        "NOT_VALIDATED": "Bağımsız olarak doğrulanmadı"
+      },
+      "vertical": "Düşey referans",
+      "datum": "Düşey datum",
+      "height_type": "Yükseklik türü",
+      "height": {
+        "orthometric_gravity_related": "Ortometrik (gravite tabanlı)",
+        "ellipsoidal": "Elipsoidal"
+      },
+      "surface_model": "Yüzey modeli",
+      "accuracy": "Düşey doğruluk",
+      "reason": "Gerekçe",
+      "availability": "Gözlem kapsamı",
+      "reference_geography": "Referans coğrafya",
+      "missing_semantics": "Eksik gözlemler",
+      "zero_semantics": "Sıfır değerler",
+      "limitation": "Kapsam sınırlaması",
+      "missing": {
+        "NULL_NO_DATA_NOT_ZERO": "NULL / VERİ YOK — asla sıfır değil"
+      },
+      "zero": {
+        "REAL_OBSERVED_ZERO": "Sıfır, gerçek gözlenmiş bir değerdir"
+      },
+      "coverage": {
+        "reference_units": "Referans birimler",
+        "matched": "Referansla eşleşen",
+        "reference_without_observation": "Gözlemi olmayan referans birimler",
+        "source_unmatched": "Referansla eşleşmeyen kaynak kayıtlar",
+        "source_null_identifier": "Kimliği NULL olan kaynak kayıtlar",
+        "null_observations": "NULL gözlemler"
+      },
+      "revisions": "Metadata düzeltmeleri ({{count}})",
+      "revisions_note": "Commit'li kaydın üzerine uygulanan denetlenebilir düzeltmeler. Yükler ve commit'li kayıtlar değişmez.",
+      "copies": "Sürüm kopyaları",
+      "role": {
+        "authoritative": "Yetkili",
+        "secondary": "İkincil kopya"
+      }
     },
     "access": {
       "RESTRICTED": "Kısıtlı",
@@ -199,6 +286,7 @@
       "location_r2": "Cloudflare R2 · kova {{bucket}} (doğrulanmış commit işareti)",
       "committed_line": "işaretlendi {{at}} · {{size}}",
       "cloud_copy_line": "Doğrulanmış bulut kopyası var ({{at}}); katalog geçişe kadar yerel kaydı kullanır.",
+      "secondary_copy_line": "İkincil kopya: {{backend}} (aynı paket, katalog kullanmaz)",
       "backend": { "local": "Yerel", "r2": "Bulut (R2)" },
       "provider": { "r2": "Cloudflare R2" },
       "provider_line": "{{provider}} · kova {{bucket}}",
@@ -420,6 +508,12 @@
       "semantic_note": "Alan açıklamaları yalnız paket sağlıyorsa gösterilir; eksik anlamlar uydurulmaz.",
       "domains": "Kodlu domainler ({{count}})",
       "codes": "{{count}} kod",
+      "domain_kind": { "coded": "Kodlu değer domaini", "range": "Aralık domaini", "glob": "Desen domaini" },
+      "domain_origin": {
+        "extracted_from_source_geodatabase": "kaynak coğrafi veritabanından çıkarıldı",
+        "package_declaration_matches_source_geodatabase": "paket beyanı, kaynak coğrafi veritabanıyla birebir"
+      },
+      "domain_semantic": { "EXTRACTED_NOT_SCIENTIFICALLY_VERIFIED": "çıkarıldı, bilimsel olarak doğrulanmadı" },
       "quality": "Bilimsel kalite",
       "status_source": "Durum kaynağı",
       "steward": "Veri sorumlusu kararı",

@@ -5,7 +5,9 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
-import { api, errorKey, type CatalogItem, type IntakePackage, type IntakeStatus, type StorageLocation, type StorageStatus } from "../api";
+import {
+  api, errorKey, type CatalogItem, type IntakePackage, type IntakeStatus, type StorageLocation, type StorageStatus, type TemporalEntry,
+} from "../api";
 import { EmptyState } from "../components/common";
 import { PageHeader } from "../components/Layout";
 import { RequireProject } from "../components/projects";
@@ -39,14 +41,25 @@ export function useDataFormat() {
       return item.place ? t("data.title_pattern", { place: item.place, layer }) : layer;
     };
     const category = (c: string | null) => (c ? t(`data.dataset_category.${c}`, { defaultValue: c }) : notProvided);
+    const temporalEntry = (e: TemporalEntry) => {
+      const kind = t(`data.temporal.kind.${e.kind}`, { defaultValue: e.kind });
+      if (e.status === "UNKNOWN" || (isMissing(e.start_value) && isMissing(e.end_value))) return t("data.temporal.entry_unknown", { kind });
+      const span = e.end_value && e.end_value !== e.start_value ? `${e.start_value ?? "?"} – ${e.end_value}` : String(e.start_value ?? e.end_value);
+      return t("data.temporal.entry", { kind, span });
+    };
     const temporal = (tc: CatalogItem["temporal"]) => {
+      // Açık zaman girdisi (gözlem dönemi, edinim, demografik referans yılı …) varsa o gösterilir; yoksa eski özet.
+      const known = (tc.entries ?? []).filter((e) => e.status !== "UNKNOWN" && e.kind !== "validity_period");
+      if (known.length && (!tc.currency_year || known.some((e) => e.kind !== "source_reference_date"))) {
+        return known.filter((e) => e.kind !== "source_reference_date" || known.length === 1).map(temporalEntry).join(" · ");
+      }
       if (tc.state === "unknown" || !tc.currency_year) return notProvided;
       const range = tc.valid_from && tc.valid_to ? `${tc.valid_from} – ${tc.valid_to}` : t("data.temporal.range_not_provided");
       return t("data.temporal.currency", { year: tc.currency_year, range });
     };
     const extent = (e: CatalogItem["spatial_extent"]) =>
       e ? t("data.extent", { minx: number(e.minx), maxx: number(e.maxx), miny: number(e.miny), maxy: number(e.maxy), crs: e.crs ?? unknown }) : unknown;
-    return { t, locale, unknown, notProvided, number, date, shortDate, text, title, category, temporal, extent };
+    return { t, locale, unknown, notProvided, number, date, shortDate, text, title, category, temporal, temporalEntry, extent };
   }, [t, locale]);
 }
 
@@ -363,6 +376,9 @@ function DetailPanel({ item, onVerified }: { item: CatalogItem; onVerified: () =
             )}
             {item.storage?.cloud_copy?.same_fingerprint && (
               <div className="cell-muted"><Cloud size={11} aria-hidden /> {t("data.storage.cloud_copy_line", { at: f.date(item.storage.cloud_copy.committed_at) })}</div>
+            )}
+            {item.storage?.secondary_copy && (
+              <div className="cell-muted">{t("data.storage.secondary_copy_line", { backend: t(`data.storage.backend.${item.storage.secondary_copy}`) })}</div>
             )}
           </Fact>
         </Group>

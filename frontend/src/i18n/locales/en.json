@@ -169,7 +169,94 @@
     },
     "temporal": {
       "currency": "Currency year {{year}} · {{range}}",
-      "range_not_provided": "validity period not provided"
+      "range_not_provided": "validity period not provided",
+      "entry": "{{kind}}: {{span}}",
+      "entry_unknown": "{{kind}}: unknown",
+      "kind": {
+        "observation_period": "Observation period",
+        "acquisition_date": "Acquisition date(s)",
+        "acquisition_span": "Acquisition span",
+        "source_reference_date": "Source reference date",
+        "demographic_reference_year": "Demographic reference year",
+        "administrative_geography_vintage": "Administrative geography vintage",
+        "survey_date": "Survey date",
+        "product_generation_date": "Product generation date",
+        "publication_date": "Publication date",
+        "validity_period": "Validity period"
+      },
+      "continuity": {
+        "continuous": "Continuous",
+        "discontinuous": "Discontinuous",
+        "selected_acquisitions": "Selected acquisitions (not continuous)",
+        "single_date": "Single date",
+        "unknown": "Unknown"
+      }
+    },
+    "science": {
+      "title": "Scientific context",
+      "temporal": "Temporal metadata",
+      "temporal_note": "Each date is recorded with its meaning. Unknown dates stay unknown; the registration date is never used as a source date.",
+      "scope_dataset": "Whole release",
+      "col": {
+        "kind": "Meaning",
+        "value": "Value",
+        "continuity": "Continuity",
+        "status": "Status",
+        "scope": "Scope",
+        "basis": "Evidence",
+        "by": "Recorded by",
+        "paths": "Changed fields",
+        "applied": "Applied",
+        "role": "Role",
+        "same_fingerprint": "Same package fingerprint"
+      },
+      "status": {
+        "SOURCE_DATA": "From the source data",
+        "SOURCE_DECLARED": "Declared by the source",
+        "INFERRED_CORROBORATED": "Inferred and corroborated",
+        "UNKNOWN": "Unknown",
+        "UNVERIFIED": "Not verified",
+        "INHERITED_DOCUMENTED": "Inherited (documented in processing records)",
+        "EMBEDDED": "Embedded in the raster",
+        "VERIFIED": "Verified",
+        "NOT_VALIDATED": "Not independently validated"
+      },
+      "vertical": "Vertical reference",
+      "datum": "Vertical datum",
+      "height_type": "Height type",
+      "height": {
+        "orthometric_gravity_related": "Orthometric (gravity-related)",
+        "ellipsoidal": "Ellipsoidal"
+      },
+      "surface_model": "Surface model",
+      "accuracy": "Vertical accuracy",
+      "reason": "Reason",
+      "availability": "Observation coverage",
+      "reference_geography": "Reference geography",
+      "missing_semantics": "Missing observations",
+      "zero_semantics": "Zero values",
+      "limitation": "Coverage limitation",
+      "missing": {
+        "NULL_NO_DATA_NOT_ZERO": "NULL / NO DATA — never zero"
+      },
+      "zero": {
+        "REAL_OBSERVED_ZERO": "A zero is a real observed value"
+      },
+      "coverage": {
+        "reference_units": "Reference units",
+        "matched": "Matched to the reference",
+        "reference_without_observation": "Reference units without observation",
+        "source_unmatched": "Source records without reference match",
+        "source_null_identifier": "Source records with NULL identifier",
+        "null_observations": "NULL observations"
+      },
+      "revisions": "Metadata revisions ({{count}})",
+      "revisions_note": "Auditable corrections applied on top of the committed record. Payloads and committed records are not changed.",
+      "copies": "Release copies",
+      "role": {
+        "authoritative": "Authoritative",
+        "secondary": "Secondary copy"
+      }
     },
     "access": {
       "RESTRICTED": "Restricted",
@@ -199,6 +286,7 @@
       "location_r2": "Cloudflare R2 · bucket {{bucket}} (verified commit marker)",
       "committed_line": "committed {{at}} · {{size}}",
       "cloud_copy_line": "A verified cloud copy exists ({{at}}); the catalog uses the local record until cutover.",
+      "secondary_copy_line": "Secondary copy: {{backend}} (same package, not used by the catalog)",
       "backend": { "local": "Local", "r2": "Cloud (R2)" },
       "provider": { "r2": "Cloudflare R2" },
       "provider_line": "{{provider}} · bucket {{bucket}}",
@@ -420,6 +508,12 @@
       "semantic_note": "Field descriptions are shown only if the package provides them; missing meanings are not invented.",
       "domains": "Coded domains ({{count}})",
       "codes": "{{count}} codes",
+      "domain_kind": { "coded": "Coded-value domain", "range": "Range domain", "glob": "Pattern domain" },
+      "domain_origin": {
+        "extracted_from_source_geodatabase": "extracted from the source geodatabase",
+        "package_declaration_matches_source_geodatabase": "package declaration, identical to the source geodatabase"
+      },
+      "domain_semantic": { "EXTRACTED_NOT_SCIENTIFICALLY_VERIFIED": "extracted, not scientifically verified" },
       "quality": "Scientific quality",
       "status_source": "Status source",
       "steward": "Data steward disposition",

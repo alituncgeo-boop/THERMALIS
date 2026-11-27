@@ -70,6 +70,104 @@ function cell(value: unknown, f: ReturnType<typeof useDataFormat>): ReactNode {
   return String(value);
 }
 
+/* ---------- bilimsel bağlam: zaman, düşey referans, gözlem kapsamı, düzeltmeler, kopyalar ---------- */
+function ScientificContext({ meta }: { meta: DatasetMetadata }) {
+  const f = useDataFormat();
+  const { t } = f;
+  const entries = meta.temporal_entries ?? [];
+  const vr = meta.scientific?.vertical_reference ?? null;
+  const da = meta.scientific?.data_availability ?? null;
+  const revisions = meta.metadata_revisions ?? [];
+  const copies = meta.copies ?? [];
+  const status = (s: string | null | undefined) => (s ? t(`data.science.status.${s}`, { defaultValue: s }) : f.unknown);
+  return (
+    <Section title={t("data.science.title")}>
+      <h3 className="sub-title">{t("data.science.temporal")}</h3>
+      <p className="cell-muted small-gap">{t("data.science.temporal_note")}</p>
+      <Table
+        columns={[{ key: "kind", label: t("data.science.col.kind") }, { key: "start_value", label: t("data.science.col.value"), mono: true },
+          { key: "continuity", label: t("data.science.col.continuity") }, { key: "status", label: t("data.science.col.status") },
+          { key: "scope", label: t("data.science.col.scope"), mono: true }, { key: "basis", label: t("data.science.col.basis"), mono: true }]}
+        rows={entries as unknown as Row[]}
+        render={(key, row) => {
+          if (key === "kind") return t(`data.temporal.kind.${row.kind}`, { defaultValue: String(row.kind) });
+          if (key === "start_value") {
+            if (row.status === "UNKNOWN") return <span className="cell-muted">{f.unknown}</span>;
+            return row.end_value && row.end_value !== row.start_value ? `${row.start_value ?? "?"} – ${row.end_value}` : String(row.start_value ?? row.end_value ?? "—");
+          }
+          if (key === "continuity") return t(`data.temporal.continuity.${row.continuity}`, { defaultValue: String(row.continuity) });
+          if (key === "status") return status(row.status as string);
+          if (key === "scope") return row.scope === "dataset" ? t("data.science.scope_dataset") : String(row.scope);
+          return undefined;
+        }}
+      />
+
+      {vr && (
+        <>
+          <h3 className="sub-title">{t("data.science.vertical")}</h3>
+          <KV rows={[
+            [t("data.science.col.status"), status(vr.status)],
+            [t("data.science.datum"), vr.datum_name ? `${vr.datum_name}${vr.epsg ? ` (EPSG:${vr.epsg})` : ""}` : f.unknown],
+            [t("data.science.height_type"), vr.height_type ? t(`data.science.height.${vr.height_type}`, { defaultValue: vr.height_type }) : f.unknown],
+            [t("data.meta.unit"), f.text(vr.unit, f.unknown)],
+            [t("data.science.surface_model"), f.text(vr.surface_model, f.unknown)],
+            [t("data.science.accuracy"), status(vr.accuracy_status)],
+            [t("data.science.reason"), f.text(vr.reason)],
+          ]} />
+          {!!vr.evidence?.length && (
+            <ul className="small evidence-list">{vr.evidence.map((e, i) => <li key={i}><span className="mono">{e.source}</span>{e.detail ? ` — ${e.detail}` : ""}</li>)}</ul>
+          )}
+        </>
+      )}
+
+      {da && (
+        <>
+          <h3 className="sub-title">{t("data.science.availability")}</h3>
+          <KV rows={[
+            [t("data.science.reference_geography"), <span className="mono">{f.text(da.reference_geography)}</span>],
+            [t("data.science.missing_semantics"), da.missing_semantics ? t(`data.science.missing.${da.missing_semantics}`, { defaultValue: da.missing_semantics }) : f.notProvided],
+            [t("data.science.zero_semantics"), da.zero_semantics ? t(`data.science.zero.${da.zero_semantics}`, { defaultValue: da.zero_semantics }) : f.notProvided],
+            [t("data.science.limitation"), f.text(da.limitation)],
+            ...Object.entries(da.coverage ?? {}).map(([k, val]) => [t(`data.science.coverage.${k}`, { defaultValue: k }),
+              typeof val === "number" ? f.number(val) : f.text(val)] as [string, ReactNode]),
+          ]} />
+        </>
+      )}
+
+      <h3 className="sub-title">{t("data.science.revisions", { count: revisions.length })}</h3>
+      <p className="cell-muted small-gap">{t("data.science.revisions_note")}</p>
+      <Table
+        columns={[{ key: "revision_id", label: t("data.meta.col.id"), mono: true }, { key: "created_at", label: t("data.col.registered") },
+          { key: "created_by", label: t("data.science.col.by") }, { key: "paths", label: t("data.science.col.paths"), mono: true },
+          { key: "reason", label: t("data.science.reason") }, { key: "applied", label: t("data.science.col.applied") }]}
+        rows={revisions as unknown as Row[]}
+        render={(key, row) => {
+          if (key === "created_at") return f.date(row.created_at as string);
+          if (key === "paths") return (row.paths as string[]).join(", ");
+          if (key === "applied") return row.applied ? t("data.meta.yes") : t("data.meta.no");
+          return undefined;
+        }}
+      />
+
+      {copies.length > 0 && (
+        <>
+          <h3 className="sub-title">{t("data.science.copies")}</h3>
+          <Table
+            columns={[{ key: "backend", label: t("data.storage.location") }, { key: "role", label: t("data.science.col.role") },
+              { key: "same_fingerprint", label: t("data.science.col.same_fingerprint") }]}
+            rows={copies as unknown as Row[]}
+            render={(key, row) => {
+              if (key === "backend") return t(`data.storage.backend.${row.backend}`, { defaultValue: String(row.backend) });
+              if (key === "role") return t(`data.science.role.${row.role}`, { defaultValue: String(row.role) });
+              return undefined;
+            }}
+          />
+        </>
+      )}
+    </Section>
+  );
+}
+
 /* ---------- anlamsal veri sözlüğü ---------- */
 function SemanticStatus({ status }: { status: string | null }) {
   const { t } = useDataFormat();
@@ -388,6 +486,8 @@ export function DatasetMetadataPage() {
         </Section>
       </div>
 
+      <ScientificContext meta={meta} />
+
       <Section title={t("data.meta.fields", { count: meta.fields.length })}>
         <Table columns={[{ key: "name", label: t("data.meta.col.field"), mono: true }, { key: "dictionary_alias", label: t("data.meta.col.alias") },
           { key: "type", label: t("data.meta.col.type") }, { key: "dictionary_type", label: t("data.meta.col.dictionary_type") },
@@ -413,6 +513,14 @@ export function DatasetMetadataPage() {
         {meta.domains.map((d) => (
           <details key={d.name} className="domain-block">
             <summary><span className="mono">{d.name}</span> · {v(d.description)} · {t("data.meta.codes", { count: d.values.length })}</summary>
+            {(d.domain_kind || d.semantic_status) && (
+              <p className="cell-muted small-gap">
+                {d.domain_kind && t(`data.meta.domain_kind.${d.domain_kind}`, { defaultValue: d.domain_kind })}
+                {d.min_value != null && d.max_value != null && ` · ${d.min_value} – ${d.max_value}`}
+                {d.origin && ` · ${t(`data.meta.domain_origin.${d.origin}`, { defaultValue: d.origin })}`}
+                {d.semantic_status && ` · ${t(`data.meta.domain_semantic.${d.semantic_status}`, { defaultValue: d.semantic_status })}`}
+              </p>
+            )}
             <Table columns={[{ key: "code", label: t("data.meta.col.code"), mono: true }, { key: "label", label: t("data.meta.col.label") }]} rows={d.values} />
           </details>
         ))}

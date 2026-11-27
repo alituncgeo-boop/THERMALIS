@@ -90,7 +90,10 @@ def _item(data_root: Path, layer: dict[str, Any], dv: dict[str, Any], profile: d
         "crs_name": layer["crs_name"], "spatial_extent": extent,
         "temporal": {"state": temporal["state"] if temporal else "unknown",
                      "currency_year": (profile or {}).get("temporal_currency_year"),
-                     "valid_from": (profile or {}).get("valid_from"), "valid_to": (profile or {}).get("valid_to")},
+                     "valid_from": (profile or {}).get("valid_from"), "valid_to": (profile or {}).get("valid_to"),
+                     # Anlamlı zaman girdileri (tür + değer + durum); kayıt tarihi kaynak tarihi yerine konmaz.
+                     "entries": [{k: e[k] for k in ("kind", "start_value", "end_value", "continuity", "status", "scope")}
+                                 for e in _temporal_entries(data_root, ds, ver, layer["layer_name"])]},
         "quality_status": dv["quality_status"], "access_class": dv["access_class"],
         "integrity": {k: v for k, v in _integrity(ds, ver, data_root).items() if k != "history"},
         "metadata_completeness": _completeness_summary(completeness),
@@ -102,14 +105,24 @@ def _item(data_root: Path, layer: dict[str, Any], dv: dict[str, Any], profile: d
     }
 
 
+def _temporal_entries(data_root: Path, ds: str, ver: str, layer_name: str) -> list[dict[str, Any]]:
+    from .contract import temporal_entries
+
+    return temporal_entries(data_root, ds, ver, layer_name)
+
+
 def _storage_summary(data_root: Path, ds: str, ver: str) -> dict[str, Any]:
     from .catalog_index import storage_location
 
     loc = storage_location(data_root, ds, ver) or {"backend": "local"}
+    copies = _query(data_root, "SELECT backend, role FROM release_copies WHERE dataset_id=? AND version=?", (ds, ver))
+    secondary = next((c["backend"] for c in copies if c["role"] == "secondary"), None)
     copy = _one(_query(data_root, "SELECT bucket, committed_at, same_fingerprint FROM cloud_copies WHERE dataset_id=? AND version=?",
                        (ds, ver)))
     return {"backend": loc["backend"], "provider": loc.get("provider"), "bucket": loc.get("bucket"),
             "committed_at": loc.get("committed_at"), "total_bytes": loc.get("total_bytes"), "synced_at": loc.get("synced_at"),
+            # Yetkili kaynak (sürüm başına); ikincil kopya varsa hangi depoda olduğu.
+            "authoritative": loc["backend"], "secondary_copy": secondary,
             # Geçiş döneminde yerel kaydın doğrulanmış bulut kopyası (katalog yerel kaydı kullanmaya devam eder).
             "cloud_copy": None if copy is None else {"bucket": copy["bucket"], "committed_at": copy["committed_at"],
                                                      "same_fingerprint": bool(copy["same_fingerprint"])}}
@@ -156,7 +169,12 @@ def dataset_metadata(data_root: Path, layer_id: str, version: str | None = None)
         return None
     from ..storage import read_json
 
-    record, quality, integrity = (read_json(folder / n) for n in ("version.json", "quality.json", "integrity.json"))
+    from .catalog_index import effective_record
+    from .contract import release_copies, revisions_list, temporal_entries
+
+    # Commit'li kayıt + denetlenebilir metadata düzeltmeleri (değişmez içerik değişmez).
+    record, quality = (effective_record(data_root, folder, n) for n in ("version.json", "quality.json"))
+    integrity = read_json(folder / "integrity.json")
     dv = _one(_query(data_root, "SELECT * FROM dataset_versions WHERE dataset_id=? AND version=?", (ds, ver)))
     profile = _one(_query(data_root, "SELECT * FROM dataset_profile WHERE dataset_id=? AND version=?", (ds, ver)))
     meta = _one(_query(data_root, "SELECT * FROM layer_metadata WHERE layer_dataset_id=? AND version=?", (layer_id, ver)))
@@ -172,7 +190,13 @@ def dataset_metadata(data_root: Path, layer_id: str, version: str | None = None)
         d = _one(_query(data_root, "SELECT * FROM domains WHERE dataset_id=? AND version=? AND name=?", (ds, ver, name)))
         values = _query(data_root, "SELECT code, label FROM domain_values WHERE dataset_id=? AND version=? AND domain=? ORDER BY rowid",
                         (ds, ver, name))
-        domains.append({"name": name, "description": (d or {}).get("description"), "values": values})
+        det = _one(_query(data_root, "SELECT domain_kind, min_value, max_value, origin, semantic_status, unexpected_codes "
+                                     "FROM domain_details WHERE dataset_id=? AND version=? AND name=?", (ds, ver, name)))
+        domains.append({"name": name, "description": (d or {}).get("description"), "values": values,
+                        "domain_kind": (det or {}).get("domain_kind") or (d or {}).get("domain_type"),
+                        "min_value": (det or {}).get("min_value"), "max_value": (det or {}).get("max_value"),
+                        "origin": (det or {}).get("origin"), "semantic_status": (det or {}).get("semantic_status"),
+                        "unexpected_codes": (det or {}).get("unexpected_codes")})
     layer_names = set(record.get("layers", {}))
     findings = [f for f in _query(data_root, "SELECT * FROM quality_findings WHERE dataset_id=? AND version=? ORDER BY seq", (ds, ver))
                 if f["layer_dataset_id"] == layer_id or (f["subject"] not in layer_names)]
@@ -219,7 +243,20 @@ def dataset_metadata(data_root: Path, layer_id: str, version: str | None = None)
         "record_issues": query_record_issues(data_root, ds, ver),
         "metadata_completeness": query_completeness(data_root, ds, ver),
         "registration_checks": record.get("checks", []),
+        "temporal_entries": temporal_entries(data_root, ds, ver, layer["layer_name"]),
+        "scientific": _scientific(record, layer["layer_name"]),
+        "metadata_revisions": revisions_list(data_root, ds, ver),
+        "copies": release_copies(data_root, ds, ver),
     }
+
+
+def _scientific(record: dict[str, Any], layer_name: str) -> dict[str, Any]:
+    """Düşey referans (yükseklik ürünleri) ve gözlem kapsamı (eksik ≠ sıfır) — yalnız etkin kayıttan."""
+    from .contract import vertical_reference
+
+    lrec = (record.get("layers") or {}).get(layer_name) or {}
+    return {"vertical_reference": vertical_reference(lrec.get("raster"), lrec),
+            "data_availability": lrec.get("data_availability")}
 
 
 def export_catalog(data_root: Path, fmt: str = "json") -> tuple[str, str]:

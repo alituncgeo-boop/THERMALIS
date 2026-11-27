@@ -367,6 +367,8 @@ def build_bundle_records(pkg: SourcePackage, declaration: dict[str, Any], work: 
                         "source": container, "source_layer_name": v["layer"],
                         "fields": [{**f, "null_count": v["null_counts"].get(f["name"])} for f in v["fields"]],
                         "content": v["content"]}
+        if v.get("coded_value_assessment"):
+            layers[name]["coded_value_assessment"] = v["coded_value_assessment"]
         datasets.append({"kind": "vector", "layer": name, "container": v["container"], "source_layer_name": v["layer"],
                          "crs_wkt_sha256": v.get("crs_wkt_sha256"), "domains_used": v["domains_used"]})
     for r in found["raster"]:

@@ -41,7 +41,11 @@ export interface CatalogItem {
   role: string;
   crs_name: string | null;
   spatial_extent: Extent | null;
-  temporal: { state: string; currency_year: string | null; valid_from: string | null; valid_to: string | null };
+  temporal: {
+    state: string; currency_year: string | null; valid_from: string | null; valid_to: string | null;
+    /** Anlamlı zaman girdileri (tür + değer + süreklilik + durum). Kayıt tarihi kaynak tarihi yerine konmaz. */
+    entries?: TemporalEntry[];
+  };
   quality_status: string;
   access_class: string;
   integrity: { status: string | null; checked_at: string | null; last_successful_at: string | null };
@@ -64,6 +68,49 @@ export interface StorageLocation {
   synced_at: string | null;
   /** Geçiş döneminde yerel kaydın doğrulanmış bulut kopyası (katalog yerel kaydı kullanmaya devam eder). */
   cloud_copy?: { bucket: string | null; committed_at: string | null; same_fingerprint: boolean } | null;
+  /** Sürüm başına yetkili kaynak ve (varsa) ikincil kopyanın deposu. */
+  authoritative?: "local" | "r2";
+  secondary_copy?: "local" | "r2" | null;
+}
+
+export interface TemporalEntry {
+  kind: string;
+  start_value: string | null;
+  end_value: string | null;
+  continuity: string;
+  status: string;
+  scope: string;
+  basis?: string | null;
+  note?: string | null;
+}
+
+export interface VerticalReference {
+  status: string;
+  reason?: string | null;
+  datum_name?: string | null;
+  epsg?: number | null;
+  height_type?: string | null;
+  unit?: string | null;
+  surface_model?: string | null;
+  accuracy_status?: string | null;
+  evidence?: { source: string; detail?: string }[];
+}
+
+export interface DataAvailability {
+  reference_geography?: string | null;
+  missing_semantics?: string | null;
+  zero_semantics?: string | null;
+  coverage?: Record<string, number | string | null> | null;
+  limitation?: string | null;
+}
+
+export interface MetadataRevision {
+  revision_id: string;
+  created_at: string | null;
+  created_by: string | null;
+  reason: string | null;
+  paths: string[];
+  applied: boolean;
 }
 
 export interface StorageStatus {
@@ -127,7 +174,15 @@ export interface DatasetMetadata {
   geometry: Row & { extent: Extent | null };
   fields: Row[];
   dictionary: Row[];
-  domains: { name: string; description: string | null; values: { code: string; label: string }[] }[];
+  domains: {
+    name: string; description: string | null; values: { code: string; label: string }[];
+    domain_kind?: string | null; min_value?: string | null; max_value?: string | null; origin?: string | null;
+    semantic_status?: string | null; unexpected_codes?: string | null;
+  }[];
+  temporal_entries?: TemporalEntry[];
+  scientific?: { vertical_reference: VerticalReference | null; data_availability: DataAvailability | null };
+  metadata_revisions?: MetadataRevision[];
+  copies?: { backend: string; role: string; same_fingerprint: boolean; note: string | null }[];
   quality: {
     status: string;
     status_source: string | null;

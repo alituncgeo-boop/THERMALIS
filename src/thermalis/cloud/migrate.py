@@ -117,12 +117,12 @@ def plan_migration(data_root: Path, dataset_id: str, version: str, *, provider: 
 
     authorization = None
     if access in auth.NEEDS_AUTHORIZATION:
-        if authorization_path is None:
-            raise MigrationRefused("authorization_required", access)
-        try:
-            authorization = auth.validate(auth.load(authorization_path), dataset_id=dataset_id, version=version,
-                                          package_id=package_id, manifest_sha256=manifest_sha, access_class=access,
-                                          provider=provider, bucket=bucket)
+        from .grants import authorization_for
+
+        try:  # açık kayıt dosyası (geriye uyumlu) ya da kapsayan merkezi operatör yetkisi
+            authorization = authorization_for(data_root, dataset_id=dataset_id, version=version, package_id=package_id,
+                                              manifest_sha256=manifest_sha, access_class=access, provider=provider,
+                                              bucket=bucket, authorization_path=authorization_path)
         except auth.AuthorizationError as exc:
             raise MigrationRefused(exc.code, exc.detail) from None
 

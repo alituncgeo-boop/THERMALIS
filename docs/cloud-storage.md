@@ -39,6 +39,9 @@ releases/<SEG>/<SEG>/<sürüm>/payload/...            yalnız-oluştur
 releases/<SEG>/<SEG>/<sürüm>/records/{version,quality,integrity}.json
 releases/<SEG>/<SEG>/<sürüm>/_COMMIT.json           yalnız-oluştur, en son
 state/datasets/<SEG>/<SEG>/releases.json            türetilmiş işaretçi (yetkili değil)
+state/ledger/<akış>/<kimlik>.json                    bulut defteri: yalnız-oluştur, içerikten türetilen kimlik
+                                                     (metadata düzeltmeleri, yetkiler, yetkili kaynak kararları,
+                                                     anlamsal doğrulama ve yeniden doğrulama geçmişi)
 ```
 
 - Yetkili kayıt `_COMMIT.json`'dır; her nesnenin anahtarını, boyutunu, SHA-256'sını listeler.

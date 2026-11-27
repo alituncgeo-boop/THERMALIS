@@ -589,6 +589,171 @@ def _storage_cloud_intake_toggle(args: argparse.Namespace) -> int:
     return 0
 
 
+def _read_spec(path: str) -> dict:
+    spec = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    if not isinstance(spec, dict):
+        raise ValueError("spec must be a JSON object")
+    return spec
+
+
+def _optional_store(settings, offline: bool):
+    """Bulut deposu (yapılandırılmışsa). ``--offline`` veya hata: ``None`` (girdi yerelde kuyrukta kalır)."""
+    if offline or not settings.cloud.bucket:
+        return None
+    from .objectstore.errors import StorageError
+
+    try:
+        return _release_store_from_settings(settings)
+    except StorageError as exc:
+        print(f"Bulut erişilemedi / cloud unavailable: {exc.code} — girdi yerelde kuyrukta / queued locally", file=sys.stderr)
+        return None
+
+
+def _push_ledger(store, root: Path) -> None:
+    if store is None:
+        return
+    from .cloud import ledger
+
+    out = ledger.push_pending(store, root)
+    print(f"Bulut defteri / cloud ledger: {out['pushed']} itildi / pushed · {out['conflicts']} çakışma / conflicts")
+
+
+def _storage_grant(args: argparse.Namespace) -> int:
+    """Operatör yetkisi kaydet (kapsam açık; belge referansı isteğe bağlı)."""
+    from .cloud import grants
+    from .settings import effective_data_root, load_settings
+
+    settings = load_settings()
+    root = effective_data_root(settings)
+    try:
+        spec = _read_spec(args.spec)
+        allowed = ("granted_by", "attestation", "attestation_date", "operations", "destinations", "datasets", "evidence_type",
+                   "document_reference", "conditions", "expires_at")
+        unknown = sorted(set(spec) - set(allowed))
+        if unknown:
+            raise grants.GrantError("grant_spec_unknown_fields", ",".join(unknown))
+        body = grants.build_grant(**{k: spec[k] for k in allowed if k in spec})
+        existing = {g["id"] for g in grants.all_grants(root)[0]}
+        grants.save(root, body)
+    except grants.GrantError as exc:
+        print(f"REDDEDİLDİ / REFUSED: {exc.code} {exc.detail}", file=sys.stderr)
+        return 2
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"REDDEDİLDİ / REFUSED: spec_invalid {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    print(("Mevcut yetki / existing grant: " if body["id"] in existing else "Yetki kaydedildi / grant recorded: ") + body["id"])
+    print(f"  {len(body['datasets'])} sürüm · işlemler {body['operations']} · kanıt {body['evidence_type']}")
+    _push_ledger(_optional_store(settings, args.offline), root)
+    return 0
+
+
+def _storage_revoke(args: argparse.Namespace) -> int:
+    from .cloud import grants
+    from .settings import effective_data_root, load_settings
+
+    settings = load_settings()
+    root = effective_data_root(settings)
+    if args.grant_id not in {g["id"] for g in grants.all_grants(root)[0]}:
+        print(f"REDDEDİLDİ / REFUSED: grant_not_found {args.grant_id}", file=sys.stderr)
+        return 2
+    try:
+        body = grants.build_revocation(args.grant_id, revoked_by=args.by, reason=args.reason)
+    except grants.GrantError as exc:
+        print(f"REDDEDİLDİ / REFUSED: {exc.code}", file=sys.stderr)
+        return 2
+    grants.save(root, body)
+    print(f"Geri alındı / revoked: {args.grant_id} ({body['id']})")
+    _push_ledger(_optional_store(settings, args.offline), root)
+    return 0
+
+
+def _storage_grants(args: argparse.Namespace) -> int:
+    from .cloud import grants
+    from .settings import effective_data_root, load_settings
+
+    root = effective_data_root(load_settings())
+    items, revoked = grants.all_grants(root)
+    if not items:
+        print("Yetki kaydı yok / no grants")
+    for g in sorted(items, key=lambda g: g.get("created_at", "")):
+        print(f"{g['id']}  [{grants.status(g, revoked)}]  {g['granted_by']} · {g['evidence_type']} · {g.get('attestation_date')}")
+        print(f"    işlemler / operations: {', '.join(g['operations'])}")
+        for d in g["destinations"]:
+            print(f"    hedef / destination: {d['provider']}/{d['bucket']}")
+        for d in g["datasets"]:
+            print(f"    {d['dataset_id']} {d['version']}" + (f" · MANIFEST {d['manifest_sha256'][:12]}…" if d.get("manifest_sha256") else ""))
+    return 0
+
+
+def _storage_revise_metadata(args: argparse.Namespace) -> int:
+    """Denetlenebilir metadata düzeltmesi (yük yeniden yüklenmez; commit'li kayıt değişmez)."""
+    from .data import revisions
+    from .data.catalog_index import rebuild_index
+    from .settings import effective_data_root, load_settings
+
+    settings = load_settings()
+    root = effective_data_root(settings)
+    try:
+        spec = _read_spec(args.spec)
+        body = revisions.create(root, dataset_id=args.dataset_id, version=args.version, changes=spec.get("changes") or [],
+                                reason=spec.get("reason") or "", evidence=spec.get("evidence") or [],
+                                created_by=spec.get("created_by") or "", target=args.target)
+    except revisions.RevisionError as exc:
+        print(f"REDDEDİLDİ / REFUSED: {exc.code} {exc.detail}", file=sys.stderr)
+        return 2
+    except (OSError, ValueError) as exc:
+        print(f"REDDEDİLDİ / REFUSED: spec_invalid {type(exc).__name__}", file=sys.stderr)
+        return 2
+    print(f"Düzeltme kaydedildi / revision recorded: {body['id']} (temel / base {body['base_operation_id']})")
+    for c in body["changes"]:
+        print(f"  {c['record']}:{c['path']}")
+    _push_ledger(_optional_store(settings, args.offline), root)
+    rebuild_index(root)
+    return 0
+
+
+def _storage_set_authority(args: argparse.Namespace) -> int:
+    """Tek sürümün yetkili kaynağı (r2 | local). Genel depo arka ucu değişmez; yerel klasöre dokunulmaz."""
+    from .cloud.authority import AuthorityError, set_authority
+    from .objectstore.errors import StorageError
+    from .settings import effective_data_root, load_settings
+
+    settings = load_settings()
+    root = effective_data_root(settings)
+    store = _optional_store(settings, False) if args.source == "r2" or not args.offline else None
+    try:
+        decision = set_authority(root, args.dataset_id, args.version, args.source, decided_by=args.by, reason=args.reason,
+                                 store=store, require_read_back=args.source == "r2")
+    except AuthorityError as exc:
+        print(f"REDDEDİLDİ / REFUSED: {exc.code} {exc.detail}", file=sys.stderr)
+        return 2
+    except StorageError as exc:
+        print(f"BAŞARISIZ / FAILED: {exc.code} {exc.detail}", file=sys.stderr)
+        return 3
+    for c in decision["equivalence_checks"]:
+        print(f"  [{c['status']}] {c['id']} {c['detail']}")
+    print(f"Yetkili kaynak / authority: {args.dataset_id} {args.version} → {args.source} ({decision['id']}; önceki / previous "
+          f"{decision['previous_source']}) · etkin depo / active backend {settings.storage_backend} (değişmedi)")
+    return 0
+
+
+def _storage_ledger_sync(args: argparse.Namespace) -> int:
+    from .cloud import ledger
+    from .data.catalog_index import rebuild_index
+    from .settings import effective_data_root, load_settings
+
+    settings = load_settings()
+    root = effective_data_root(settings)
+    store = _optional_store(settings, False)
+    if store is None:
+        print("Bulut yapılandırılmamış / cloud not configured", file=sys.stderr)
+        return 1
+    out = ledger.safe_sync(store, root)
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    rebuild_index(root)
+    return 0 if out.get("status") == "ok" else 2
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="thermalis", description="THERMALIS — Urban Climate Intelligence Framework")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -701,6 +866,35 @@ def main(argv: list[str] | None = None) -> int:
     ca.add_argument("--archive", action="append", required=True, help="Manifestteki göreli arşiv yolu (birden çok verilebilir)")
     ca.add_argument("--confirm-live", action="store_true")
     ca.set_defaults(func=_storage_collection_acceptance)
+    gr = storage_sub.add_parser("grant", help="Operatör yetkisi kaydet (açık kapsam; belge referansı isteğe bağlı)")
+    gr.add_argument("--spec", required=True, help="Yetki alanları (JSON)")
+    gr.add_argument("--offline", action="store_true", help="Buluta itme; yerel kuyrukta bırak")
+    gr.set_defaults(func=_storage_grant)
+    rv = storage_sub.add_parser("revoke", help="Operatör yetkisini geri al (ayrı, değişmez kayıt)")
+    rv.add_argument("grant_id")
+    rv.add_argument("--by", required=True)
+    rv.add_argument("--reason", required=True)
+    rv.add_argument("--offline", action="store_true")
+    rv.set_defaults(func=_storage_revoke)
+    gl = storage_sub.add_parser("grants", help="Operatör yetkileri ve durumları")
+    gl.set_defaults(func=_storage_grants)
+    rm = storage_sub.add_parser("revise-metadata", help="Denetlenebilir metadata düzeltmesi (yük yeniden yüklenmez)")
+    rm.add_argument("dataset_id")
+    rm.add_argument("version")
+    rm.add_argument("--spec", required=True, help='{"changes":[{"record","path","op":"set","value"}],"reason","evidence","created_by"}')
+    rm.add_argument("--target", choices=["auto", "r2", "local"], default="auto", help="Bağlanacak temel kayıt")
+    rm.add_argument("--offline", action="store_true")
+    rm.set_defaults(func=_storage_revise_metadata)
+    sa = storage_sub.add_parser("set-authority", help="Tek sürümün yetkili kaynağı: r2 (denklik + tam geri okuma) veya local (geri alma)")
+    sa.add_argument("dataset_id")
+    sa.add_argument("version")
+    sa.add_argument("--source", required=True, choices=["r2", "local"])
+    sa.add_argument("--by", required=True)
+    sa.add_argument("--reason", required=True)
+    sa.add_argument("--offline", action="store_true", help="Yalnız 'local' için: buluta itme")
+    sa.set_defaults(func=_storage_set_authority)
+    ls = storage_sub.add_parser("ledger-sync", help="Bulut defterini eşitle (it + çek + yerel günlükleri geri kur)")
+    ls.set_defaults(func=_storage_ledger_sync)
 
     args = parser.parse_args(argv)
     return args.func(args)

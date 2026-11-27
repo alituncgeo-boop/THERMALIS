@@ -184,17 +184,62 @@ def _scientific_block(data_root: Path, layer: dict[str, Any]) -> dict[str, Any] 
 
     Pasaport geçerlilik tarihleriyle karıştırılmaz: ``temporal_coverage.semantics`` ne tür bir dönem olduğunu söyler.
     """
+    from .catalog_index import effective_record
+
     _, folder = _physical(data_root, layer)
     try:
-        record = json.loads((folder / "version.json").read_text(encoding="utf-8"))
+        record = effective_record(data_root, folder, "version.json")  # commit'li kayıt + denetlenebilir düzeltmeler
     except (OSError, ValueError):
         return None
     lrec = (record.get("layers") or {}).get(layer["layer_name"]) or {}
-    block = {"record_kind": record.get("record_kind") or "transfer_package", "raster": lrec.get("raster"), "table": lrec.get("table"),
+    raster = lrec.get("raster")
+    block = {"record_kind": record.get("record_kind") or "transfer_package", "raster": raster, "table": lrec.get("table"),
              "source_layer_name": lrec.get("source_layer_name"), "field_units": {f["name"]: f["unit"] for f in lrec.get("fields", [])
                                                                                   if f.get("unit")} or None,
-             "temporal_coverage": (record.get("source") or {}).get("temporal_coverage")}
+             "temporal_coverage": (record.get("source") or {}).get("temporal_coverage"),
+             # Yükseklik ürünleri için düşey referans: kayıtta yoksa açıkça UNKNOWN (varsayılan datum atanmaz).
+             "vertical_reference": vertical_reference(raster, lrec),
+             # Gözlem kapsamı: eksik gözlem NULL/NO_DATA'dır, sıfır değildir (bkz. data_availability).
+             "data_availability": lrec.get("data_availability")}
     return block if any(v for k, v in block.items() if k != "record_kind") else {"record_kind": block["record_kind"]}
+
+
+def vertical_reference(raster: dict[str, Any] | None, lrec: dict[str, Any]) -> dict[str, Any] | None:
+    """Raster yükseklik ürünlerinde düşey referans bloğu (yalnız kayıttan; yoksa ``UNKNOWN``)."""
+    if not raster:
+        return None
+    declared = raster.get("vertical_reference") or lrec.get("vertical_reference")
+    if declared:
+        return declared
+    kind = str(raster.get("surface_model") or raster.get("product_kind") or "").upper()
+    if kind in ("DSM", "DTM", "DEM", "NDSM") or raster.get("unit") in ("m", "metre", "meter") and raster.get("is_elevation"):
+        return {"status": "UNKNOWN", "reason": "no vertical reference recorded for this elevation product"}
+    return None
+
+
+def temporal_entries(data_root: Path, ds: str, ver: str, layer_name: str | None = None) -> list[dict[str, Any]]:
+    """Anlamlı zaman girdileri (sürüm + bu katman). Bilinmeyen tarih ``UNKNOWN`` kalır; kayıt tarihi yerine konmaz."""
+    rows = _query(data_root, "SELECT scope, kind, start_value, end_value, continuity, status, basis, note, evidence "
+                             "FROM temporal_entries WHERE dataset_id=? AND version=? ORDER BY rowid", (ds, ver))
+    out = []
+    for r in rows:
+        if layer_name and r["scope"] not in ("dataset", layer_name):
+            continue
+        out.append({**r, "evidence": json.loads(r["evidence"]) if r["evidence"] else []})
+    return out
+
+
+def revisions_list(data_root: Path, ds: str, ver: str) -> list[dict[str, Any]]:
+    rows = _query(data_root, "SELECT revision_id, created_at, created_by, reason, paths, evidence, applied FROM metadata_revisions "
+                             "WHERE dataset_id=? AND version=? ORDER BY created_at, revision_id", (ds, ver))
+    return [{**r, "paths": json.loads(r["paths"] or "[]"), "evidence": json.loads(r["evidence"] or "[]"), "applied": bool(r["applied"])}
+            for r in rows]
+
+
+def release_copies(data_root: Path, ds: str, ver: str) -> list[dict[str, Any]]:
+    rows = _query(data_root, "SELECT backend, role, same_fingerprint, note FROM release_copies WHERE dataset_id=? AND version=? "
+                             "ORDER BY role", (ds, ver))
+    return [{**r, "same_fingerprint": bool(r["same_fingerprint"])} for r in rows]
 
 
 def descriptor(data_root: Path, dataset_id: str, version: str | None = None, *, authorized: bool = False) -> dict[str, Any]:
@@ -240,7 +285,10 @@ def descriptor(data_root: Path, dataset_id: str, version: str | None = None, *, 
             "crs": layer["extent_crs"], "reprojected": False},
         "temporal": {"currency_year": (profile or {}).get("temporal_currency_year"), "valid_from": (profile or {}).get("valid_from"),
                      "valid_to": (profile or {}).get("valid_to"), "note": (profile or {}).get("temporal_note"),
-                     "source": (profile or {}).get("source_file")},
+                     "source": (profile or {}).get("source_file"),
+                     "entries": temporal_entries(data_root, ds, ver, layer["layer_name"])},
+        "metadata_revisions": revisions_list(data_root, ds, ver),
+        "copies": release_copies(data_root, ds, ver),
         "schema": [{**f, "nullable": None if f["nullable"] is None else bool(f["nullable"])} for f in fields],
         "quality": {"status": dv["quality_status"], "summary": finding_summary(data_root, ds, ver), "links": {"qa": _links(dataset_id, dsv)["qa"]}},
         "access": _access_conditions(dv, meta, authorized),
@@ -269,8 +317,14 @@ def semantic_dictionary(data_root: Path, dataset_id: str, version: str | None = 
     layer = _layer(data_root, dataset_id, version)
     dsv = layer["dataset_version"]
     rows = _query(data_root, "SELECT * FROM semantic_fields WHERE layer_dataset_id=? AND version=? ORDER BY rowid", (dataset_id, dsv))
+    details = {d["name"]: d for d in _query(data_root, "SELECT name, domain_kind, origin, semantic_status FROM domain_details "
+                                                       "WHERE dataset_id=? AND version=?", (layer["dataset_id"], layer["version"]))}
     for r in rows:
         r["domain_link"] = _links(dataset_id, dsv)["domain"].replace("{domain}", r["domain_name"]) if r["domain_name"] else None
+        det = details.get(r["domain_name"]) if r["domain_name"] else None
+        # Domain tanımı kaynaktan çıkarıldı ≠ alan anlamı doğrulandı; ikisi ayrı gösterilir.
+        r["domain_kind"] = (det or {}).get("domain_kind")
+        r["domain_semantic_status"] = (det or {}).get("semantic_status")
     log = _one(_query(data_root, "SELECT value FROM meta WHERE key='verification_log'"))
     return {"contract": CONTRACT, "dataset_id": dataset_id, "version": dsv, "version_id": version_id(dataset_id, dsv),
             "content_id": layer["content_id"], "statuses": list(semantics.STATUSES), "fields": rows,
@@ -291,8 +345,11 @@ def field_info(data_root: Path, dataset_id: str, version: str | None, name: str)
     dom = None
     if row["domain_name"]:
         d = _one(_query(data_root, "SELECT * FROM domains WHERE dataset_id=? AND version=? AND name=?", (layer["dataset_id"], layer["version"], row["domain_name"])))
+        det = _one(_query(data_root, "SELECT domain_kind, origin, semantic_status FROM domain_details WHERE dataset_id=? AND version=? AND name=?",
+                          (layer["dataset_id"], layer["version"], row["domain_name"])))
         dom = {"name": row["domain_name"], "defined_in_source": d is not None, "description": (d or {}).get("description"),
                "code_count": (d or {}).get("code_count"), "domain_origin": row["domain_origin"],
+               "domain_kind": (det or {}).get("domain_kind"), "semantic_status": (det or {}).get("semantic_status"),
                "link": _links(dataset_id, dsv)["domain"].replace("{domain}", row["domain_name"])}
     joins = _query(data_root, "SELECT * FROM field_relations WHERE dataset_id=? AND version=? AND ((from_layer_dataset_id=? AND from_field=?) "
                               "OR (to_layer_dataset_id=? AND to_field=?))", (layer["dataset_id"], layer["version"], dataset_id, name, dataset_id, name))
@@ -311,8 +368,13 @@ def domain_codes(data_root: Path, dataset_id: str, version: str | None, name: st
                              "ORDER BY layer_dataset_id, field", (ds, name, ds, ver))
     conflicts = _query(data_root, "SELECT item, authoritative_value, other_value, other_source, issue FROM metadata_conflicts "
                                   "WHERE dataset_id=? AND version=? AND kind='domain_label' AND subject=?", (ds, ver, name))
+    detail = _one(_query(data_root, "SELECT container, domain_kind, min_value, max_value, split_policy, merge_policy, origin, "
+                                    "semantic_status, unexpected_codes FROM domain_details WHERE dataset_id=? AND version=? AND name=?",
+                         (ds, ver, name)))
     return {"contract": CONTRACT, "package_dataset_id": ds, "version": ver, "package_version": ver, "name": name, "description": d["description"],
             "domain_type": d["domain_type"], "field_type": d["field_type"], "code_count": d["code_count"], "source": d["source_file"],
+            # Kaynak GDB'den çıkarılmış tanım ≠ bilimsel olarak doğrulanmış anlam (semantic_status ayrı).
+            "detail": detail,
             "source_priority": semantics.METADATA_SOURCE_PRIORITY["domain_labels"],
             "codes": codes, "used_by_fields": used, "conflicts": conflicts,
             "note": "Kodlar ve açıklamalar yetkili kaynaktaki tanımla birebirdir; çevrilmez, düzeltilmez veya tahmin edilmez. "
@@ -420,6 +482,9 @@ def access(data_root: Path, dataset_id: str, version: str | None = None, *, auth
             # Bulut sürümünde yerel yol yoktur (uydurulmaz): erişim ``storage`` bloğundadır.
             "absolute_path": str(folder / "payload" / asset["path"]) if (asset and allowed and local) else None,
             "storage": storage, "read_only": True, "conditions": conditions, "usage_note": USAGE_NOTE,
+            # Analiz için bilimsel bağlam: zaman girdileri ve gözlem kapsamı/eksik anlamı (eksik ≠ 0).
+            "temporal": temporal_entries(data_root, layer["dataset_id"], layer["version"], layer["layer_name"]),
+            "data_availability": (_scientific_block(data_root, layer) or {}).get("data_availability"),
             # Bulut sürümünü yerelde okumak için: doğrulanmış önbellek kopyası (yalnız istenen varlık indirilir).
             "materialize": {"endpoint": "/api/data/v1/materialize", "method": "POST"} if (allowed and not local) else None}
 

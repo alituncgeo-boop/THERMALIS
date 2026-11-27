@@ -46,5 +46,7 @@ ve açılmış içerik iç manifestle doğrulanmış SHA-256 ile karşılaştır
 ## Erişim sınıfı ve yetki
 
 Beyan erişim sınıfını kaydeder ama yetki VERMEZ. `RESTRICTED`/`UNKNOWN` veri için bulut yayını, mevcut kural gereği
-geçerli bir `THERMALIS_AUTHORIZATION.json` (veri sahibi kurum, belge referansı, kapsamda `cloud_storage`) ister.
+geçerli bir yetki ister: ya açık `THERMALIS_AUTHORIZATION.json` dosyası (`--authorization`) ya da sürümü açıkça kapsayan
+merkezî operatör yetkisi (`storage grant`; bkz. [data-hardening.md](data-hardening.md)). Belge referansı isteğe bağlıdır;
+operatör beyanı geçerli bir kanıt türüdür.
 Paket içindeki "USER_ATTESTED_AUTHORIZATION" beyanları kontrollü iç aktarımı kapsar; bulut yetkisi yerine geçmez.

@@ -367,10 +367,17 @@ class CloudIntake:
             try:
                 record = _read_json(self.intake_store, layout.authorization_key(package_id))
             except NotFound:
-                raise Rejected("authorization_required", access) from None
+                record = None
             try:
-                authorization = auth.validate(record, dataset_id=ds, version=ver, package_id=package_id, manifest_sha256=sha,
-                                              access_class=access, provider=self.provider, bucket=self.bucket)
+                if record is not None:
+                    authorization = auth.validate(record, dataset_id=ds, version=ver, package_id=package_id, manifest_sha256=sha,
+                                                  access_class=access, provider=self.provider, bucket=self.bucket)
+                else:  # paketle yetki kaydı gelmediyse kapsayan merkezi operatör yetkisi
+                    from .grants import authorization_for
+
+                    authorization = authorization_for(self.data_root, dataset_id=ds, version=ver, package_id=package_id,
+                                                      manifest_sha256=sha, access_class=access, provider=self.provider,
+                                                      bucket=self.bucket)
             except auth.AuthorizationError as exc:
                 raise Rejected(exc.code, exc.detail) from None
 

@@ -31,6 +31,11 @@ bayt bayt `releases/<SEG>/<SEG>/<sürüm>/` altına yayımlar. Genel bir mekaniz
 Taşımadan sonra katalog yerel kaydı kullanmaya devam eder. Bulut kopyası `cloud_copies` tablosunda "doğrulanmış bulut kopyası"
 olarak görünür (sorun değildir). Aynı sürüm farklı içerikle bulutta ise `DUPLICATE_ACROSS_BACKENDS` kayıt sorunu oluşur.
 
+**Geçiş (sürüm başına, genel arka uç değişmez):** `thermalis storage set-authority <id> <sürüm> --source r2 --by … --reason …`
+denklik kontrollerini (kayıt baytları, yük nesneleri ↔ yerel bütünlük, parmak izi, içerik kimlikleri, tam SHA-256 geri okuma)
+geçerse bulut sürümünü yetkili yapar; yerel klasör `release_copies`'te ikincil kopya olarak kalır ve **değişmez**. Geri alma:
+`--source local`. Kararlar bulut defterindedir (`state/ledger/authority/`). Ayrıntı: [data-hardening.md](data-hardening.md).
+
 Bulut yansısında veri dosyası olmadığı için:
 - içerik kimlikleri `records/layer_facts.json`'dan,
 - özel kayıt kimlikleri (GLOBALID) `records/quality_identifiers.json`'dan okunur;

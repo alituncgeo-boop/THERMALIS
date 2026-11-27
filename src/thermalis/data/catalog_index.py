@@ -38,7 +38,8 @@ from . import catalog, semantics
 from .integrity import sha256_file
 
 INDEX_FILE = "catalog_index.sqlite"
-INDEX_SCHEMA_VERSION = "2.3"  # 2.0: layer_versions… · 2.1: storage_locations (bulut) · 2.2: cloud_copies (taşıma)
+INDEX_SCHEMA_VERSION = "2.4"  # 2.0: layer_versions… · 2.1: storage_locations (bulut) · 2.2: cloud_copies (taşıma)
+# 2.4: metadata_revisions, release_copies (bulut yetkili kaynak), domain_details (GDB domainleri), temporal_entries
 # 2.3: collection_items / collection_assets (raster koleksiyonları: sahne, bant, CRS, kapsam, nodata, ölçek, kalite)
 
 
@@ -165,6 +166,15 @@ CREATE TABLE collection_assets(
   scale REAL, add_offset REAL, scale_status TEXT, scale_source TEXT, add_offset_source TEXT, unit TEXT, unit_status TEXT,
   compression TEXT, cloud_optimized INTEGER, overviews INTEGER, block TEXT, qa_bitfields INTEGER,
   PRIMARY KEY(dataset_id, version, item_id, member));
+CREATE TABLE metadata_revisions(dataset_id TEXT, version TEXT, revision_id TEXT, created_at TEXT, created_by TEXT,
+  reason TEXT, paths TEXT, evidence TEXT, applied INTEGER, PRIMARY KEY(dataset_id, version, revision_id));
+CREATE TABLE release_copies(dataset_id TEXT, version TEXT, backend TEXT, role TEXT, location TEXT, same_fingerprint INTEGER,
+  record_dir TEXT, note TEXT);
+CREATE TABLE domain_details(dataset_id TEXT, version TEXT, name TEXT, container TEXT, domain_kind TEXT, field_type TEXT,
+  min_value TEXT, max_value TEXT, split_policy TEXT, merge_policy TEXT, origin TEXT, semantic_status TEXT,
+  unexpected_codes TEXT, PRIMARY KEY(dataset_id, version, name, container));
+CREATE TABLE temporal_entries(dataset_id TEXT, version TEXT, scope TEXT, kind TEXT, start_value TEXT, end_value TEXT,
+  continuity TEXT, status TEXT, basis TEXT, note TEXT, evidence TEXT);
 CREATE INDEX ix_items_date ON collection_items(dataset_id, version, acquisition_date);
 CREATE INDEX ix_findings_category ON quality_findings(dataset_id, version, category);
 CREATE INDEX ix_layers_dataset ON layers(dataset_id, version);
@@ -369,13 +379,21 @@ def registered_fingerprint(folder: Path) -> str | None:
     return _registered_fingerprint(folder, _read(folder / "version.json"))[0]
 
 
-def _index_version(con: sqlite3.Connection, folder: Path) -> list[dict[str, Any]] | None:
-    record = _read(folder / "version.json")
+def effective_record(data_root: Path | None, folder: Path, name: str) -> dict[str, Any]:
+    """Kayıt + bu sürüme ait denetlenebilir metadata düzeltmeleri (değişmez commit'li kayıt değişmez)."""
+    from .revisions import effective
+
+    return effective(data_root, folder, name, _read(folder / name))
+
+
+def _index_version(con: sqlite3.Connection, folder: Path, data_root: Path | None = None) -> list[dict[str, Any]] | None:
+    record = effective_record(data_root, folder, "version.json")
     if record.get("registration", {}).get("status") != "REGISTERED":
         return None
-    quality = _read(folder / "quality.json")
+    quality = effective_record(data_root, folder, "quality.json")
     integrity = _read(folder / "integrity.json")
     ds, ver = record["dataset_id"], record["version"]
+    _index_revisions_domains_temporal(con, folder, record, data_root)
     src, access, crs, reg = record.get("source", {}), record.get("access", {}), record.get("crs", {}), record["registration"]
     fp, fp_source = _registered_fingerprint(folder, record)
     con.execute(
@@ -453,6 +471,11 @@ def _index_version(con: sqlite3.Connection, folder: Path) -> list[dict[str, Any]
                      "PACKAGE/CODED_DOMAINS.json (GDB ile birebir: DOM-01)"))
         for code, label in values.items():
             con.execute("INSERT INTO domain_values VALUES (?,?,?,?,?)", (ds, ver, d.get("name"), str(code), label))
+        # Paket beyanı (CODED_DOMAINS.json), kayıtta GDB ile birebir doğrulandı (DOM-01); alan anlamı ayrıca doğrulanır.
+        con.execute("INSERT OR IGNORE INTO domain_details VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (ds, ver, d.get("name"), "PACKAGE/CODED_DOMAINS.json", "coded", d.get("field_type"), None, None, None, None,
+                     "package_declaration_matches_source_geodatabase", "EXTRACTED_NOT_SCIENTIFICALLY_VERIFIED",
+                     "not_assessed_at_registration"))
 
     exceptions = quality.get("exceptions", [])
     ids = Counter(e.get("exception_id") for e in exceptions)
@@ -551,6 +574,69 @@ def _index_version(con: sqlite3.Connection, folder: Path) -> list[dict[str, Any]
     for code, detail, evidence in issues:
         con.execute("INSERT INTO record_issues VALUES (?,?,?,?,?)", (ds, ver, code, detail, evidence))
     return sem_entries
+
+
+DOMAIN_KINDS = {0: "coded", 1: "range", 2: "glob"}
+
+
+def _index_revisions_domains_temporal(con: sqlite3.Connection, folder: Path, record: dict[str, Any], data_root: Path | None) -> None:
+    """Metadata düzeltmeleri, GDB domainleri (kaynak kayıttan) ve anlamlı zaman girdileri."""
+    from . import temporal
+    from .revisions import base_operation, for_release
+
+    ds, ver = record["dataset_id"], record["version"]
+    if data_root is not None:
+        op = base_operation(folder)
+        for r in for_release(data_root, ds, ver):
+            applied = int(r.get("base_operation_id") in (op, None) or op is None)
+            con.execute("INSERT OR REPLACE INTO metadata_revisions VALUES (?,?,?,?,?,?,?,?,?)",
+                        (ds, ver, r["id"], r.get("created_at"), r.get("created_by"), r.get("reason"),
+                         json.dumps([c["path"] for c in r.get("changes", [])], ensure_ascii=False),
+                         json.dumps(r.get("evidence"), ensure_ascii=False), applied))
+    # GDB domainleri: kaynak paket kaydında (records/bundle.json) GDB'den çıkarılmış tanımlar. Çıkarılmış olmak
+    # bilimsel olarak doğrulanmış anlam demek DEĞİLDİR (semantic_status ayrı tutulur).
+    # Tanımsız kod değerlendirmesi (kayıt sırasında yapıldıysa): domain başına toplanır. Eski kayıtlarda yoktur →
+    # "not_assessed_at_registration" (değerlendirilmedi; "tanımsız kod yok" ANLAMINA GELMEZ).
+    assessed: dict[str, dict[str, int]] = {}
+    for layer in (record.get("layers") or {}).values():
+        doms = {f["name"]: f.get("domain") for f in layer.get("fields", []) if f.get("domain")}
+        for fname, a in (layer.get("coded_value_assessment") or {}).items():
+            bucket = assessed.setdefault(doms.get(fname) or "", {})
+            for code, n in (a.get("unexpected") or {}).items():
+                bucket[code] = bucket.get(code, 0) + int(n)
+
+    def unexpected(name: str, declared: Any) -> str:
+        if name in assessed:
+            return json.dumps({"status": "UNEXPECTED_CODES_PRESENT" if assessed[name] else "ALL_CODES_DEFINED",
+                               "unexpected": assessed[name]}, ensure_ascii=False, sort_keys=True)
+        return declared or "not_assessed_at_registration"
+
+    bundle = folder / "bundle.json"
+    if bundle.is_file():
+        try:
+            b = _read(bundle)
+        except (OSError, ValueError):
+            b = {}
+        for container, domains in (b.get("domains") or {}).items():
+            for name, d in (domains or {}).items():
+                values = d.get("coded_values") or {}
+                kind = DOMAIN_KINDS.get(d.get("type"), str(d.get("type")))
+                con.execute("INSERT OR IGNORE INTO domains VALUES (?,?,?,?,?,?,?,?)",
+                            (ds, ver, name, d.get("description"), len(values), kind, d.get("field_type"),
+                             f"records/bundle.json#domains/{container}/{name}"))
+                for code, label in values.items():
+                    con.execute("INSERT OR IGNORE INTO domain_values VALUES (?,?,?,?,?)", (ds, ver, name, str(code), label))
+                con.execute("INSERT OR REPLACE INTO domain_details VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (ds, ver, name, container, kind, d.get("field_type"),
+                             None if d.get("min") is None else str(d.get("min")), None if d.get("max") is None else str(d.get("max")),
+                             d.get("split_policy"), d.get("merge_policy"), "extracted_from_source_geodatabase",
+                             "EXTRACTED_NOT_SCIENTIFICALLY_VERIFIED", unexpected(name, d.get("unexpected_codes"))))
+    profile = dataset_profile(folder, record)
+    for e in temporal.entries(record, profile):
+        con.execute("INSERT INTO temporal_entries VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (ds, ver, e["scope"], e["kind"], None if e["start"] is None else str(e["start"]),
+                     None if e["end"] is None else str(e["end"]), e["continuity"], e["status"], e.get("basis"), e.get("note"),
+                     json.dumps(e.get("evidence") or [], ensure_ascii=False)))
 
 
 def _text_or_none(value: Any) -> str | None:
@@ -758,10 +844,28 @@ def rebuild_index(data_root: Path) -> Path:
             cache = _read(cache_path) if cache_path.is_file() else {}
             collected = []
             local_keys: set[tuple[str, str]] = set()
+            # Sürüm başına yetkili kaynak (genel depo arka ucu DEĞİŞMEZ): "r2" ise ve doğrulanmış bulut yansısı aynı paket
+            # parmak iziyle mevcutsa, sürüm bulut kaydından indekslenir; yerel kopya "release_copies"de görünür. Yansı yoksa
+            # veya parmak izi farklıysa yerel kayıt kullanılır ve durum kayıt sorunu olarak raporlanır (güvenli geri dönüş).
+            from ..cloud.authority import load_authority
+            from ..cloud.catalog_sync import mirror_folder
+
+            authority = load_authority(data_root)
+            deferred: dict[tuple[str, str], Path] = {}
             for folder in _version_dirs(data_root):
-                entries = _index_version(con, folder)
+                rec0 = _read(folder / "version.json")
+                key0 = (rec0.get("dataset_id"), rec0.get("version"))
+                if authority.get(f"{key0[0]}@{key0[1]}", {}).get("source") == "r2":
+                    mirror = mirror_folder(data_root, key0[0], key0[1])
+                    if (mirror / "version.json").is_file() and \
+                            _registered_fingerprint(mirror, _read(mirror / "version.json"))[0] == _registered_fingerprint(folder, rec0)[0]:
+                        deferred[key0] = folder
+                        continue
+                    con.execute("INSERT INTO record_issues VALUES (?,?,?,?,?)",
+                                (key0[0], key0[1], "AUTHORITY_SOURCE_UNAVAILABLE", "r2", str(mirror)))
+                entries = _index_version(con, folder, data_root)
                 if entries is not None:
-                    rec = _read(folder / "version.json")
+                    rec = effective_record(data_root, folder, "version.json")
                     facts, source = _facts_for(data_root, folder, rec, cache)
                     collected.append({"registered_at": rec["registration"].get("registered_at") or "", "version": rec["version"],
                                       "dataset_id": rec["dataset_id"], "entries": entries, "facts": facts, "facts_source": source})
@@ -775,9 +879,18 @@ def rebuild_index(data_root: Path) -> Path:
             from ..cloud.catalog_sync import LOCATION_NAME, cloud_record_folders
 
             for folder in cloud_record_folders(data_root):
-                rec = _read(folder / "version.json")
+                rec = effective_record(data_root, folder, "version.json")
                 key = (rec.get("dataset_id"), rec.get("version"))
-                if key in local_keys:
+                if key in deferred:
+                    # Bulut yetkili: yerel kopya ikincil kopya olarak kaydedilir (klasöre dokunulmaz).
+                    decision = authority.get(f"{key[0]}@{key[1]}", {})
+                    con.execute("INSERT INTO release_copies VALUES (?,?,?,?,?,?,?,?)",
+                                (key[0], key[1], "local", "secondary", str(deferred[key]), 1, str(deferred[key]),
+                                 f"authority=r2 decision={decision.get('id')} at {decision.get('decided_at')}"))
+                    con.execute("INSERT INTO release_copies VALUES (?,?,?,?,?,?,?,?)",
+                                (key[0], key[1], "r2", "authoritative", _read(folder / LOCATION_NAME).get("release_prefix"), 1,
+                                 str(folder), f"authority=r2 decision={decision.get('id')}"))
+                elif key in local_keys:
                     # Yerel kayıt esas kalır (geçiş onayına kadar). Aynı paketin (aynı MANIFEST özeti) doğrulanmış bulut
                     # kopyası bir sorun değildir: ayrı tabloda gösterilir. Farklı içerikli kopya ise kayıt sorunudur.
                     local_folder = catalog.version_dir(data_root, key[0], key[1])
@@ -787,11 +900,17 @@ def rebuild_index(data_root: Path) -> Path:
                     con.execute("INSERT OR REPLACE INTO cloud_copies VALUES (?,?,?,?,?,?,?,?)",
                                 (key[0], key[1], loc.get("bucket"), loc.get("release_prefix"), loc.get("operation_id"),
                                  loc.get("committed_at"), int(bool(same)), str(folder)))
+                    con.execute("INSERT INTO release_copies VALUES (?,?,?,?,?,?,?,?)",
+                                (key[0], key[1], "local", "authoritative", str(local_folder), int(bool(same)), str(local_folder),
+                                 "authority=local"))
+                    con.execute("INSERT INTO release_copies VALUES (?,?,?,?,?,?,?,?)",
+                                (key[0], key[1], "r2", "secondary", loc.get("release_prefix"), int(bool(same)), str(folder),
+                                 "authority=local"))
                     if not same:
                         con.execute("INSERT INTO record_issues VALUES (?,?,?,?,?)",
                                     (key[0], key[1], "DUPLICATE_ACROSS_BACKENDS", "r2", str(folder)))
                     continue
-                entries = _index_version(con, folder)
+                entries = _index_version(con, folder, data_root)
                 if entries is None:
                     continue
                 facts, source = _facts_for(data_root, folder, rec, cache)

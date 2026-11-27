@@ -106,7 +106,11 @@ def materialize_asset(data_root: Path, store: ObjectStore | None, cache: ObjectC
     except CacheFull as exc:
         raise CacheCapacityExceeded(exc.detail, key=asset["path"]) from None
     return {"backend": "r2", "path": str(path), "materialized": True, "bytes": total, "files": len(items),
-            "dataset_version": layer["dataset_version"], "verification": "sha256_per_object_against_commit",
+            "dataset_version": layer["dataset_version"],
+            # Arşiv içi üyeler: sıkıştırılmış aralık okunur, yerelde açılır; içerik SHA-256'sı iç manifestle doğrulanmış üye
+            # özetiyle (records/bundle.json) karşılaştırılır. Aksi hâlde nesne özeti commit işaretindekiyle karşılaştırılır.
+            "verification": "member_sha256_against_inner_manifest_after_range_read_and_inflate" if member
+            else "sha256_per_object_against_commit",
             "lease": "released_after_response",
             "note": "Önbellekteki kopya salt okunurdur ve önbellek dolarsa tahliye edilebilir; kullanmadan hemen önce yeniden isteyin."}
 

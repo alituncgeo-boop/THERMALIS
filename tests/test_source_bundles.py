@@ -195,6 +195,12 @@ def test_bundle_direct_publication_catalog_and_member_access(bundle: Path, data_
     ds = gdal.OpenEx(str(m["path"]), gdal.OF_VECTOR)
     assert ds.GetLayerByName("Districts").GetFeatureCount() == layers_local("Districts", local)
     ds = None
+    assert m["verification"] == "member_sha256_against_inner_manifest_after_range_read_and_inflate"
+    from thermalis.data.ingest import assess
+
+    decl.save(data_root, bundle_declaration(bundle))
+    c = assess(bundle, data_root, settle_seconds=0)
+    assert c.state == "ALREADY_REGISTERED" and c.dataset_id == DS and "published" in c.reason  # yayından sonra izleyici doğru durum
     r = materialize_asset(data_root, store, cache, f"{DS}/SURFACE_30M")
     with zipfile.ZipFile(archive) as zf:
         assert Path(r["path"]).read_bytes() == zf.read("PREPARED_INPUT/SURFACE_30M.tif")

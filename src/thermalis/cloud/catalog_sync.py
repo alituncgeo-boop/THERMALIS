@@ -118,10 +118,11 @@ def mirror_release(store: ObjectStore, data_root: Path, prefix: str, commit: dic
             obj = objects[prefix + "records/" + name]
             if name not in RECORD_NAMES and obj["size"] <= MAX_DOCUMENT_BYTES:
                 _download_verified(store, prefix + "records/" + name, obj, staging.joinpath(*name.split("/")))
+        document_suffixes = (".json", ".md", ".txt", ".csv") if record.get("record_kind") == "directory_source" else (".json",)
         for doc in record.get("documents", []) or []:
             key = prefix + "payload/" + doc
             obj = objects.get(key)
-            if obj and doc.lower().endswith(".json") and obj["size"] <= MAX_DOCUMENT_BYTES:
+            if obj and doc.lower().endswith(document_suffixes) and obj["size"] <= MAX_DOCUMENT_BYTES:
                 _download_verified(store, key, obj, staging.joinpath("payload", *doc.split("/")))
         (staging / COMMIT_NAME).write_text(json.dumps(commit, ensure_ascii=False, sort_keys=True, indent=1) + "\n", encoding="utf-8")
         write_json_atomic(staging / LOCATION_NAME, {

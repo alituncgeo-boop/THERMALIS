@@ -72,8 +72,8 @@ def validate(data: Any, *, manifest_sha256: str | None = None, package_id: str |
         raise DeclarationError("declaration_quality_ref_missing", "quality.source_status_ref required")
     if "status" in q:
         raise DeclarationError("declaration_cannot_set_quality_status", "quality is derived from the package, never declared")
-    if ("collection" in data) == ("bundle" in data):
-        raise DeclarationError("declaration_kind_ambiguous", "exactly one of 'collection' (raster collection) or 'bundle' (ZIP source bundle)")
+    if sum(key in data for key in ("collection", "bundle", "directory")) != 1:
+        raise DeclarationError("declaration_kind_ambiguous", "exactly one of 'collection', 'bundle' or 'directory'")
     if "collection" in data:
         col = data["collection"]
         if not isinstance(col, dict):
@@ -82,10 +82,15 @@ def validate(data: Any, *, manifest_sha256: str | None = None, package_id: str |
             raise DeclarationError("declaration_interpreter_unknown", str(col.get("interpreter")))
         if not re.match(r"^[A-Z][A-Z0-9_]{0,40}$", str(col.get("layer_name") or "")):
             raise DeclarationError("declaration_layer_name_invalid", str(col.get("layer_name")))
-    else:
+    elif "bundle" in data:
         b = data["bundle"]
         if not isinstance(b, dict) or not isinstance(b.get("tables", []), list) or not isinstance(b.get("roles", {}), dict):
             raise DeclarationError("declaration_bundle_invalid")
+    else:
+        directory = data["directory"]
+        if not isinstance(directory, dict) or not isinstance(directory.get("documents", []), list) \
+                or any(not isinstance(path, str) for path in directory.get("documents", [])):
+            raise DeclarationError("declaration_directory_invalid")
     t = data.get("temporal")
     if t is not None and (not isinstance(t, dict) or t.get("semantics") not in TEMPORAL_SEMANTICS):
         raise DeclarationError("declaration_temporal_semantics_invalid", str((t or {}).get("semantics") if isinstance(t, dict) else t))

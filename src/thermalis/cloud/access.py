@@ -64,7 +64,8 @@ def bundle_items(folder: Path, prefix: str, archive: str, member: str) -> list[C
 
 
 def materialize_asset(data_root: Path, store: ObjectStore | None, cache: ObjectCache | None, layer_dataset_id: str,
-                      version: str | None = None, *, disk_free: Callable[[Path], int] | None = None) -> dict[str, Any]:
+                      version: str | None = None, *, disk_free: Callable[[Path], int] | None = None,
+                      directory_member: str | None = None) -> dict[str, Any]:
     from ..data.catalog_index import storage_location
     from ..data.contract import _layer, _physical
 
@@ -73,7 +74,14 @@ def materialize_asset(data_root: Path, store: ObjectStore | None, cache: ObjectC
     if asset is None:
         raise StorageError("asset_not_recorded", key=layer_dataset_id)
     loc = storage_location(data_root, layer["dataset_id"], layer["version"]) or {"backend": "local"}
-    archive, _, member = asset["path"].partition(".zip/")
+    directory = asset["format"] == "directory_manifest"
+    if directory_member is not None:
+        from ..objectstore.keys import validate_key
+
+        if not directory or loc["backend"] != "r2":
+            raise StorageError("raw_directory_cloud_access_required", key=layer_dataset_id)
+        asset = {**asset, "path": validate_key(directory_member)}
+    archive, _, member = ("", "", "") if directory else asset["path"].partition(".zip/")
     if loc["backend"] == "local":
         if member:
             from ..data.formats.zip_index import vsizip
@@ -90,6 +98,8 @@ def materialize_asset(data_root: Path, store: ObjectStore | None, cache: ObjectC
         asset = {**asset, "path": member}  # malzeme klasöründe arşiv içi yol korunur
     else:
         items = asset_items(commit, loc["prefix"], asset["path"])
+        if directory:
+            items = [item for item in items if item.relpath == asset["path"]]
     if not items:
         raise StorageError("asset_not_in_commit", key=asset["path"])
     total = sum(i.size for i in items)
@@ -190,6 +200,13 @@ def materialize_member(data_root: Path, store: ObjectStore | None, cache: Object
     Yalnız üyenin baytları ``Range`` istekleriyle indirilir; üye SHA-256'sı koleksiyon kaydıyla doğrulanmadan
     önbelleğe girmez. Değerler dönüştürülmez (kaynak DN).
     """
+    if item_id == "files":
+        from ..data.contract import _layer, _physical
+
+        asset, _ = _physical(data_root, _layer(data_root, layer_dataset_id, version))
+        if asset and asset["format"] == "directory_manifest":
+            return materialize_asset(data_root, store, cache, layer_dataset_id, version,
+                                     disk_free=disk_free, directory_member=member)
     layer, coll, loc = _collection_context(data_root, layer_dataset_id, version)
     item, asset = find_asset(coll, item_id, member)
     where = asset_location(data_root, loc, item, asset)

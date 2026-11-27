@@ -26,7 +26,7 @@ from typing import Any, Callable
 
 from ..data import catalog
 from ..data import declaration as decl
-from ..data.collection import BuiltCollection, CollectionError, SourcePackage, build_records, load_source_package
+from ..data.collection import BuiltCollection, CollectionError, SourcePackage, build_records, open_source_package
 from ..objectstore.base import CancelToken, ObjectStore
 from ..objectstore.errors import AlreadyExists
 from ..objectstore.publication import (PublicationPolicy, ReleaseFile, publish_release, read_commit, reconcile_dataset_pointer,
@@ -96,10 +96,11 @@ def plan_collection(source_root: Path, declaration: dict[str, Any] | Path, *, da
 
     ``package``: önceden yüklenmiş paket görünümü (ör. kabul testinin kopyasız alt kümesi); verilmezse klasörden okunur.
     """
-    from ..data.bundle import build_bundle_records, is_bundle, load_bundle
+    from ..data.bundle import build_bundle_records
+    from ..data.directory_source import KIND, build_directory_records
 
     try:
-        pkg = package or (load_bundle(Path(source_root)) if is_bundle(Path(source_root)) else load_source_package(Path(source_root)))
+        pkg = package or open_source_package(Path(source_root))
     except CollectionError as exc:
         raise DirectRefused(exc.code, exc.detail) from None
     try:
@@ -124,7 +125,7 @@ def plan_collection(source_root: Path, declaration: dict[str, Any] | Path, *, da
     op = operation_id_for(ds, ver, pkg.manifest_sha256)
     work = work_dir_for(work_root, pkg.package_id, pkg.manifest_sha256)
     cancel_fn = (lambda: cancel.raise_if_cancelled(None)) if cancel is not None else None
-    builder = build_bundle_records if pkg.kind == "zip_bundle" else build_records
+    builder = {"zip_bundle": build_bundle_records, KIND: build_directory_records}.get(pkg.kind, build_records)
     try:
         built = builder(pkg, d, work, ingest_id=op, cancel=cancel_fn, progress=progress, log=log)
     except CollectionError as exc:
@@ -192,11 +193,12 @@ def publish_collection(store: ObjectStore, plan: CollectionPlan, *, machine: str
         except AlreadyExists as exc:
             raise DirectRefused("release_conflict", exc.detail) from None
         quality = json.loads(plan.records["quality.json"].decode("utf-8")).get("status")
+        record_kind = "directory_source" if "directory.json" in plan.records else "raster_collection"
         entry = {"schema": layout.CATALOG_ENTRY_SCHEMA, "dataset_id": plan.dataset_id, "version": plan.version,
                  "package_id": plan.package_id, "manifest_sha256": plan.manifest_sha256, "release_prefix": prefix,
                  "operation_id": commit["operation_id"], "committed_at": commit["committed_at"], "access_class": plan.access_class,
                  "quality_status": quality, "object_count": len(commit["objects"]),
-                 "total_bytes": sum(o["size"] for o in commit["objects"]), "origin": ORIGIN, "record_kind": "raster_collection"}
+                 "total_bytes": sum(o["size"] for o in commit["objects"]), "origin": ORIGIN, "record_kind": record_kind}
         try:
             store.put_bytes(entry_key, json_bytes(entry), create_only=True, operation_id=plan.operation_id, cancel=cancel)
         except AlreadyExists:
@@ -228,9 +230,10 @@ def source_changes_since_index(plan: CollectionPlan) -> list[str]:
         journal = _journal_path(plan.work, f.relpath)
         try:
             recorded = read_json(journal).get("stat")
+            current = _stat_sig(f.path)
         except (OSError, ValueError):
-            recorded = None
-        if recorded is None or _stat_sig(f.path) != recorded or f.size != recorded.get("size"):
+            recorded, current = None, None
+        if recorded is None or current != recorded or f.size != recorded.get("size"):
             changed.append(f.relpath)
     return changed
 

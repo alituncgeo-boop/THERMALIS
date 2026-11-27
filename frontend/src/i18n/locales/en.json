@@ -300,6 +300,7 @@
         "staging_path_too_long": "Deferred: staging paths would exceed the Windows path limit. Choose a shorter staging folder in settings; the package was not rejected.",
         "adapter_required": "Deferred: no registration adapter for this format. The package was not downloaded or rejected; it is retried once an adapter exists.",
         "raster_collection_direct_publication": "Raster collection: not downloaded from intake. It is registered by direct publication from its source folder; the package was not rejected.",
+        "source_bundle_direct_publication": "ZIP source bundle: not downloaded from intake. It is registered by direct publication from its source folder; the package was not rejected.",
         "DIRECT_PUBLICATION": "Raster collection (e.g. satellite scenes in TAR archives): not registered automatically. An external declaration and the direct publication command are required; see the detail."
       },
       "result": {

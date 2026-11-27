@@ -298,6 +298,33 @@ def _collection_candidate(folder: Path, data_root: Path) -> str | None:
     return f"raster_collection; declaration_ok {found['dataset_id']} {found['version']} (thermalis storage publish-collection)"
 
 
+def _bundle_candidate(folder: Path, data_root: Path) -> str | None:
+    """ZIP aktarım paketi (arşiv + SHA-256 yan dosyası): otomatik kaydedilmez; beyan durumu bildirilir.
+
+    Yalnız arşivin iç ``MANIFEST.json``'u okunur (paket kimliği ve beyan bağı için); arşiv açılmaz, değiştirilmez.
+    """
+    from .bundle import is_bundle
+    from .declaration import DeclarationError, find
+
+    if not is_bundle(folder):
+        return None
+    try:
+        import zipfile
+
+        archive = next(folder.glob("*.zip"))
+        with zipfile.ZipFile(archive) as zf:
+            manifest = zf.read("MANIFEST.json")
+    except (OSError, KeyError, StopIteration, zipfile.BadZipFile):
+        return "source_bundle; inner_manifest_unreadable"
+    try:
+        found = find(data_root, folder.name, hashlib.sha256(manifest).hexdigest())
+    except DeclarationError as exc:
+        return f"source_bundle; declaration_invalid:{exc.code}"
+    if found is None:
+        return "source_bundle; declaration_missing (thermalis storage declare-collection)"
+    return f"source_bundle; declaration_ok {found['dataset_id']} {found['version']} (thermalis storage publish-collection)"
+
+
 def assess(folder: Path, data_root: Path, settle_seconds: float = DEFAULT_SETTLE_SECONDS, now: float | None = None) -> Candidate:
     """Bir klasörün işlenmeye hazır olup olmadığını manifest ve metadata üzerinden belirler (yalnız okur)."""
     now = time.time() if now is None else now
@@ -319,6 +346,9 @@ def assess(folder: Path, data_root: Path, settle_seconds: float = DEFAULT_SETTLE
         collection = _collection_candidate(folder, data_root)
         if collection is not None:
             return candidate("DIRECT_PUBLICATION", collection)
+    bundle_state = _bundle_candidate(folder, data_root)
+    if bundle_state is not None:
+        return candidate("DIRECT_PUBLICATION", bundle_state)
     if not (folder / "PACKAGE" / "MANIFEST.json").is_file() or not (folder / "PACKAGE" / "RELEASE_STATUS.json").is_file():
         return candidate("NOT_A_PACKAGE", "PACKAGE/MANIFEST.json veya PACKAGE/RELEASE_STATUS.json yok")
     marker_ok, marker_error = read_ready_marker(folder)
@@ -686,7 +716,7 @@ REASON_CODES = (
     "authorization_expired", "authorization_invalid_time", "authorization_unreadable", "ALREADY_REGISTERED_LOCALLY",
     "sha256_mismatch", "package_object_missing", "access_class_mismatch", "storage_error", "staging_path_too_long",
     # Biçim ön denetimi ve raster koleksiyonları (data/formats, cloud/direct.py)
-    "adapter_required", "raster_collection_direct_publication", "DIRECT_PUBLICATION",
+    "adapter_required", "raster_collection_direct_publication", "DIRECT_PUBLICATION", "source_bundle_direct_publication",
 )
 RETRYABLE_STATES = ("BLOCKED", "ADAPTER_REQUIRED", "FAILED")
 IN_FLIGHT_STATES = ("VALIDATING", "INGESTING")

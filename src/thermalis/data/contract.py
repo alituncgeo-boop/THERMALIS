@@ -31,7 +31,9 @@ from .catalog_index import _query, finding_summary, query_completeness, query_re
 
 CONTRACT = "thermalis.data.contract/1"
 ADAPTER_LABELS = {a.key: a.label for a in ADAPTERS}
-READERS = {"filegdb_vector": {"driver": "OpenFileGDB", "open_mode": "read_only"}}
+READERS = {"filegdb_vector": {"driver": "OpenFileGDB", "open_mode": "read_only"},
+           "geotiff": {"driver": "GTiff", "open_mode": "read_only"},
+           "csv_table": {"reader": "csv", "open_mode": "read_only", "note": "dialect, sections and header units in layer 'table' block"}}
 USAGE_NOTE = ("Bu veri setinin katalogda bulunması belirli bir bilimsel analize uygunluk onayı değildir; "
               "uygunluk kararını ilgili analiz metodolojisi verir.")
 
@@ -145,9 +147,17 @@ def storage_block(data_root: Path, dataset_id: str, version: str, asset: dict[st
     out: dict[str, Any] = {"backend": loc["backend"], "provider": loc.get("provider"),
                            "analysis_ready": True, "committed_at": loc.get("committed_at") if loc["backend"] == "r2" else None}
     if allowed and loc["backend"] == "r2" and asset:
-        key = f"{loc.get('namespace') or ''}{loc['prefix']}payload/{asset['path']}"
-        out.update(bucket=loc.get("bucket"), object_key_prefix=key, gdal_path=f"/vsis3/{loc.get('bucket')}/{key}",
-                   access_note="Bulut nesnesi: okumak için yetkili R2 kimlik bilgisi veya önbellek üzerinden malzemeleştirme gerekir.")
+        archive, _, member = asset["path"].partition(".zip/")
+        if member:  # kaynak paketi içindeki kapsayıcı: arşiv nesnesi + /vsizip/
+            key = f"{loc.get('namespace') or ''}{loc['prefix']}payload/{archive}.zip"
+            out.update(bucket=loc.get("bucket"), object_key=key, archive_member=member,
+                       gdal_path=f"/vsizip/{{/vsis3/{loc.get('bucket')}/{key}}}/{member}",
+                       access_note="Arşiv içi üye: /vsizip/ + /vsis3/ (yetkili R2 kimliği) veya POST /api/data/v1/materialize ile "
+                                   "yalnız ilgili üyelerin doğrulanmış önbellek kopyası.")
+        else:
+            key = f"{loc.get('namespace') or ''}{loc['prefix']}payload/{asset['path']}"
+            out.update(bucket=loc.get("bucket"), object_key_prefix=key, gdal_path=f"/vsis3/{loc.get('bucket')}/{key}",
+                       access_note="Bulut nesnesi: okumak için yetkili R2 kimlik bilgisi veya önbellek üzerinden malzemeleştirme gerekir.")
     return out
 
 
@@ -159,6 +169,24 @@ def _access_conditions(dv: dict[str, Any], meta: dict[str, Any] | None, authoriz
             "source_constraints": (meta or {}).get("access_constraints"),
             "physical_access": "available" if allowed else "local_component_token_required",
             "redistribution": "not_permitted" if cls == "RESTRICTED" else ("per_source_license" if cls == "PUBLIC" else "unknown")}
+
+
+def _scientific_block(data_root: Path, layer: dict[str, Any]) -> dict[str, Any] | None:
+    """Yetkili kayıttaki (version.json) raster/tablo özellikleri ve ANLAMLI zaman kapsamı (gözlem dönemi, edinim aralığı …).
+
+    Pasaport geçerlilik tarihleriyle karıştırılmaz: ``temporal_coverage.semantics`` ne tür bir dönem olduğunu söyler.
+    """
+    _, folder = _physical(data_root, layer)
+    try:
+        record = json.loads((folder / "version.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    lrec = (record.get("layers") or {}).get(layer["layer_name"]) or {}
+    block = {"record_kind": record.get("record_kind") or "transfer_package", "raster": lrec.get("raster"), "table": lrec.get("table"),
+             "source_layer_name": lrec.get("source_layer_name"), "field_units": {f["name"]: f["unit"] for f in lrec.get("fields", [])
+                                                                                  if f.get("unit")} or None,
+             "temporal_coverage": (record.get("source") or {}).get("temporal_coverage")}
+    return block if any(v for k, v in block.items() if k != "record_kind") else {"record_kind": block["record_kind"]}
 
 
 def descriptor(data_root: Path, dataset_id: str, version: str | None = None, *, authorized: bool = False) -> dict[str, Any]:
@@ -221,6 +249,7 @@ def descriptor(data_root: Path, dataset_id: str, version: str | None = None, *, 
         "field_relations": joins,
         "collection": {"kind": "raster_collection", "item_count": layer["feature_count"],
                        "link": f"/api/data/v1/collection?id={dataset_id}&version={dsv}"} if layer["role"] == "raster_collection" else None,
+        "scientific": _scientific_block(data_root, layer),
         "usage_note": USAGE_NOTE,
         "links": _links(dataset_id, dsv),
     }

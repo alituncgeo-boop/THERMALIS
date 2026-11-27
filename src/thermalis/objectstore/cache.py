@@ -50,6 +50,8 @@ class CacheItem:
     sha256: str
     size: int
     offset: int | None = None  # verilirse nesnenin [offset, offset+size) aralığı (ör. TAR üyesi); yalnız o aralık indirilir
+    codec: str | None = None   # "deflate": aralık ZIP üyesinin sıkıştırılmış verisidir; yerelde açılır, açılmış içerik doğrulanır
+    stored_size: int | None = None  # sıkıştırılmış aralık uzunluğu (codec verildiğinde)
 
 
 def default_cache_dir() -> Path:
@@ -207,7 +209,8 @@ class ObjectCache:
 
     # -- getirme ---------------------------------------------------------------------------------
     def fetch(self, store: ObjectStore, key: str, sha256: str, size: int, *, full_verify: bool = False,
-              cancel: CancelToken | None = None, offset: int | None = None) -> Path:
+              cancel: CancelToken | None = None, offset: int | None = None, codec: str | None = None,
+              stored_size: int | None = None) -> Path:
         """İçeriği önbelleğe getirir ve yolunu döndürür.
 
         Önbellekte varsa varsayılan denetim metadata düzeyindedir (boyut); ``full_verify=True`` ise
@@ -243,17 +246,33 @@ class ObjectCache:
                                 written += len(block)
                                 dst.write(block)
                     else:
-                        pos, end = offset, offset + size
+                        import zlib
+
+                        if codec not in (None, "stored", "deflate"):
+                            raise ChecksumMismatch(f"unsupported_codec:{codec}", key=key)
+                        inflater = zlib.decompressobj(-15) if codec == "deflate" else None
+                        pos = offset
+                        end = offset + (stored_size if codec else size)
                         while pos < end:
                             if cancel is not None:
                                 cancel.raise_if_cancelled(key)
                             block = store.read_range(key, pos, min(pos + RANGE_CHUNK, end) - 1)
                             if not block:
                                 raise ChecksumMismatch("range_read_returned_no_data", key=key)
-                            digest.update(block)
-                            written += len(block)
-                            dst.write(block)
                             pos += len(block)
+                            piece = block if inflater is None else inflater.decompress(block, RANGE_CHUNK)
+                            while True:  # sınırlı bellek: her adımda en çok RANGE_CHUNK açılmış bayt
+                                digest.update(piece)
+                                written += len(piece)
+                                dst.write(piece)
+                                if inflater is None or not inflater.unconsumed_tail:
+                                    break
+                                piece = inflater.decompress(inflater.unconsumed_tail, RANGE_CHUNK)
+                        if inflater is not None:
+                            tail = inflater.flush()
+                            digest.update(tail)
+                            written += len(tail)
+                            dst.write(tail)
                     dst.flush()
                     os.fsync(dst.fileno())
                 if written != size or digest.hexdigest() != sha256:
@@ -293,7 +312,8 @@ class ObjectCache:
                 cm.__enter__()
                 leases.append(cm)
             for item in items:
-                self.fetch(store, item.key, item.sha256, item.size, full_verify=full_verify, cancel=cancel, offset=item.offset)
+                self.fetch(store, item.key, item.sha256, item.size, full_verify=full_verify, cancel=cancel, offset=item.offset,
+                           codec=item.codec, stored_size=item.stored_size)
             with self._lock:
                 if not self._materialized_ok(folder, items):
                     self._build(folder, items, manifest)

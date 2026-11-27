@@ -299,6 +299,7 @@
         "staging_path_too_long": "Ertelendi: hazırlık yolları Windows yol sınırını aşacak. Ayarlarda daha kısa bir hazırlık klasörü seçin; paket reddedilmedi.",
         "adapter_required": "Ertelendi: bu biçim için kayıt bağdaştırıcısı yok. Paket indirilmedi ve reddedilmedi; bağdaştırıcı eklenince yeniden denenir.",
         "raster_collection_direct_publication": "Raster koleksiyonu: kabul alanından indirilmez. Kaynak klasöründen doğrudan yayın komutuyla kaydedilir; paket reddedilmedi.",
+        "source_bundle_direct_publication": "ZIP kaynak paketi: kabul alanından indirilmez. Kaynak klasöründen doğrudan yayın komutuyla kaydedilir; paket reddedilmedi.",
         "DIRECT_PUBLICATION": "Raster koleksiyonu (ör. TAR'lı uydu sahneleri): otomatik kaydedilmez. Paket dışı beyan ve doğrudan yayın komutu gerekir; ayrıntıya bakın.",
         "unexpected":"Beklenmeyen hata; yarım kayıt bırakılmadı."
       },

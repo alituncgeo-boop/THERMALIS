@@ -25,8 +25,9 @@ DECLARATIONS_DIR = "_declarations"
 _PACKAGE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 KNOWN_INTERPRETERS = ("landsat_c2_l2",)
-REQUIRED = ("schema", "package_id", "manifest_sha256", "dataset_id", "version", "access_class", "source", "quality", "collection",
+REQUIRED = ("schema", "package_id", "manifest_sha256", "dataset_id", "version", "access_class", "source", "quality",
             "declared_by", "declared_at")
+TEMPORAL_SEMANTICS = ("observation_period", "source_acquisition_span", "reference_period", "validity_period", "unknown")
 
 
 class DeclarationError(Exception):
@@ -71,13 +72,24 @@ def validate(data: Any, *, manifest_sha256: str | None = None, package_id: str |
         raise DeclarationError("declaration_quality_ref_missing", "quality.source_status_ref required")
     if "status" in q:
         raise DeclarationError("declaration_cannot_set_quality_status", "quality is derived from the package, never declared")
-    col = data["collection"]
-    if not isinstance(col, dict):
-        raise DeclarationError("declaration_collection_invalid")
-    if col.get("interpreter") not in (None, *KNOWN_INTERPRETERS):
-        raise DeclarationError("declaration_interpreter_unknown", str(col.get("interpreter")))
-    if not re.match(r"^[A-Z][A-Z0-9_]{0,40}$", str(col.get("layer_name") or "")):
-        raise DeclarationError("declaration_layer_name_invalid", str(col.get("layer_name")))
+    if ("collection" in data) == ("bundle" in data):
+        raise DeclarationError("declaration_kind_ambiguous", "exactly one of 'collection' (raster collection) or 'bundle' (ZIP source bundle)")
+    if "collection" in data:
+        col = data["collection"]
+        if not isinstance(col, dict):
+            raise DeclarationError("declaration_collection_invalid")
+        if col.get("interpreter") not in (None, *KNOWN_INTERPRETERS):
+            raise DeclarationError("declaration_interpreter_unknown", str(col.get("interpreter")))
+        if not re.match(r"^[A-Z][A-Z0-9_]{0,40}$", str(col.get("layer_name") or "")):
+            raise DeclarationError("declaration_layer_name_invalid", str(col.get("layer_name")))
+    else:
+        b = data["bundle"]
+        if not isinstance(b, dict) or not isinstance(b.get("tables", []), list) or not isinstance(b.get("roles", {}), dict):
+            raise DeclarationError("declaration_bundle_invalid")
+    t = data.get("temporal")
+    if t is not None and (not isinstance(t, dict) or t.get("semantics") not in TEMPORAL_SEMANTICS):
+        raise DeclarationError("declaration_temporal_semantics_invalid", str((t or {}).get("semantics") if isinstance(t, dict) else t))
+    # Not: RESTRICTED/UNKNOWN erişim yetkisi beyanla VERİLMEZ; bulut yayını ayrıca geçerli THERMALIS_AUTHORIZATION.json ister.
     if manifest_sha256 is not None and data["manifest_sha256"] != manifest_sha256:
         raise DeclarationError("declaration_does_not_match_package", "manifest_sha256")
     if package_id is not None and data["package_id"] != package_id:

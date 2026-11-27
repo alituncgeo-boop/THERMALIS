@@ -63,7 +63,11 @@ def inspect_raster(path: str) -> dict[str, Any]:
         if srs is not None:
             code, auth = srs.GetAuthorityCode(None), srs.GetAuthorityName(None)
             wkt = srs.ExportToWkt()
+            vertical = None
+            if srs.IsCompound() or srs.IsVertical():
+                vertical = srs.GetAttrValue("VERT_CS") or srs.GetAttrValue("VERTCRS") or "declared_in_crs"
             crs.update(epsg=int(code) if code and auth == "EPSG" else None, name=srs.GetName(), wkt=wkt,
+                       vertical_crs=vertical,  # yalnız CRS'de gömülüyse (ör. "EGM2008 height"); yoksa None = beyan yok
                        wkt_sha256=hashlib.sha256(wkt.encode("utf-8")).hexdigest(),
                        units=srs.GetLinearUnitsName() if srs.IsProjected() else srs.GetAngularUnitsName())
         out: dict[str, Any] = {

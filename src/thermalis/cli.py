@@ -464,11 +464,10 @@ def _collection_work_root(settings) -> Path:
 
 
 def _load_any_package(root: Path):
-    """Manifestli paket (PACKAGE/MANIFEST.json) veya ZIP kaynak paketi (arşiv + SHA-256 yan dosyası)."""
-    from .data.bundle import is_bundle, load_bundle
-    from .data.collection import load_source_package
+    """Native raster collection, ZIP source bundle or manifest-listed source directory."""
+    from .data.collection import open_source_package
 
-    return load_bundle(root) if is_bundle(root) else load_source_package(root)
+    return open_source_package(root)
 
 
 def _storage_declare_collection(args: argparse.Namespace) -> int:

@@ -406,17 +406,23 @@ def _index_version(con: sqlite3.Connection, folder: Path) -> list[dict[str, Any]
         con.execute("INSERT INTO assets VALUES (?,?,?,?,?,?,?,?,?)", (aid, ds, ver, c, "container", containers[c], None, None, None))
         con.execute("INSERT INTO relations VALUES (?,?,?,?,?,?)", (aid, "part_of_version", f"{ds}@{ver}", ds, ver, "version.json storage.vector_sources"))
     documents = set(record.get("documents", []))
+    directory_source = record.get("record_kind") == "directory_source"
+    directory_manifest_id = None
     for f in integrity.get("files", []):
         path = f["path"]
         parent = next((container_ids[c] for c in containers if path.startswith(c + "/")), None)
         kind = "document" if path in documents else ("container_member" if parent else "data_file")
         aid = asset_id(ds, ver, path)
-        con.execute("INSERT INTO assets VALUES (?,?,?,?,?,?,?,?,?)", (aid, ds, ver, path, kind, None, f["bytes"], f["sha256"], parent))
+        fmt = "directory_manifest" if directory_source and path == "MANIFEST.json" else None
+        if fmt:
+            directory_manifest_id = aid
+        con.execute("INSERT INTO assets VALUES (?,?,?,?,?,?,?,?,?)", (aid, ds, ver, path, kind, fmt, f["bytes"], f["sha256"], parent))
 
     for name, layer in record.get("layers", {}).items():
         lid = layer_dataset_id(ds, name)
         ext = layer.get("extent_native") or {}
         source = layer.get("source")
+        source_asset_id = directory_manifest_id if directory_source and source == "MANIFEST.json" else container_ids.get(source)
         con.execute("INSERT OR IGNORE INTO datasets VALUES (?,?,?,?,?,?)", (lid, "layer", ds, record.get("family"), name, None))
         con.execute(
             "INSERT INTO layers VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -424,11 +430,11 @@ def _index_version(con: sqlite3.Connection, folder: Path) -> list[dict[str, Any]
              layer.get("feature_count"), layer.get("expected_feature_count"), layer.get("crs_name"),
              None if layer.get("crs_matches_package_wkt") is None else int(bool(layer.get("crs_matches_package_wkt"))),
              ext.get("minx"), ext.get("miny"), ext.get("maxx"), ext.get("maxy"), crs.get("native_crs_name") if ext else None,
-             layer.get("null_geometry"), layer.get("empty_geometry"), container_ids.get(source), None, None, None),
+             layer.get("null_geometry"), layer.get("empty_geometry"), source_asset_id, None, None, None),
         )
         con.execute("INSERT INTO relations VALUES (?,?,?,?,?,?)", (lid, "layer_of", f"{ds}@{ver}", ds, ver, f"version.json layers.{name}"))
-        if source in container_ids:
-            con.execute("INSERT INTO relations VALUES (?,?,?,?,?,?)", (lid, "stored_in", container_ids[source], ds, ver, source))
+        if source_asset_id:
+            con.execute("INSERT INTO relations VALUES (?,?,?,?,?,?)", (lid, "stored_in", source_asset_id, ds, ver, source))
         for f in layer.get("fields", []):
             con.execute("INSERT INTO fields VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                         (lid, ver, f["name"], f.get("type"), f.get("alias"), f.get("width"),

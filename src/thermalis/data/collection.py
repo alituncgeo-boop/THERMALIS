@@ -142,6 +142,19 @@ def load_source_package(root: Path) -> SourcePackage:
     return SourcePackage(root, package_id, manifest_sha, {k: v for k, v in meta.items() if k != "sha256_files"}, entries, extra)
 
 
+def open_source_package(root: Path) -> SourcePackage:
+    """Dispatch the native direct-publication formats in legacy priority order."""
+    from .bundle import is_bundle, load_bundle
+    from .directory_source import is_directory_source, load_directory_source
+
+    root = Path(root)
+    if is_bundle(root):
+        return load_bundle(root)
+    if not (root / "PACKAGE" / "MANIFEST.json").is_file() and is_directory_source(root):
+        return load_directory_source(root)
+    return load_source_package(root)
+
+
 def subset_package(src: SourcePackage, archives: list[str], out_dir: Path, package_id: str) -> SourcePackage:
     """Seçili arşivler + tüm paket belgelerinden oluşan alt küme (yalnız yeni bir MANIFEST.json yazılır; veri kopyalanmaz).
 
@@ -242,7 +255,8 @@ def _index_raster_file(pkg: SourcePackage, entry: ManifestEntry, cancel, progres
 
 
 def index_file(pkg: SourcePackage, entry: ManifestEntry, work: Path, *, interpreter: str | None,
-               cancel: Callable[[], None] | None = None, progress: Callable[[int], None] | None = None) -> dict[str, Any]:
+               cancel: Callable[[], None] | None = None, progress: Callable[[int], None] | None = None,
+               inspect_science: bool = True) -> dict[str, Any]:
     """Tek dosyanın doğrulanmış dizini; günlükte geçerli kayıt varsa dosya yeniden okunmaz."""
     path = pkg.path(entry.path)
     journal = _journal_path(work, entry.path)
@@ -254,14 +268,14 @@ def index_file(pkg: SourcePackage, entry: ManifestEntry, work: Path, *, interpre
             cached = None
         if isinstance(cached, dict) and cached.get("schema") == JOURNAL_SCHEMA and cached.get("path") == entry.path \
                 and cached.get("sha256") == entry.sha256 and cached.get("stat") == sig and cached.get("interpreter") == interpreter \
-                and cached.get("tool") == TOOL:
+                and cached.get("tool") == TOOL and cached.get("inspect_science", True) == inspect_science:
             if progress is not None:
                 progress(entry.bytes)
             return cached
     low = entry.path.lower()
-    if low.endswith(".tar"):
+    if inspect_science and low.endswith(".tar"):
         body = _index_archive(pkg, entry, interpreter, cancel, progress)
-    elif low.endswith((".tif", ".tiff")):
+    elif inspect_science and low.endswith((".tif", ".tiff")):
         body = _index_raster_file(pkg, entry, cancel, progress)
     else:
         sha, size = _sha256_file(path, cancel)
@@ -269,11 +283,12 @@ def index_file(pkg: SourcePackage, entry: ManifestEntry, work: Path, *, interpre
             progress(size)
         if sha != entry.sha256 or size != entry.bytes:
             raise CollectionError("sha256_mismatch", entry.path)
-        body = {"format": "document"}
+        body = {"format": "document" if inspect_science else "raw_file"}
     if _stat_sig(path) != sig:
         raise CollectionError("source_changed_during_indexing", entry.path)
     record = {"schema": JOURNAL_SCHEMA, "path": entry.path, "sha256": entry.sha256, "bytes": entry.bytes, "stat": sig,
-              "interpreter": interpreter, "tool": TOOL, "verified": "streaming_sha256", "verified_at": _utc_now(), **body}
+              "interpreter": interpreter, "tool": TOOL, "inspect_science": inspect_science,
+              "verified": "streaming_sha256", "verified_at": _utc_now(), **body}
     write_json_atomic(journal, record)
     return record
 

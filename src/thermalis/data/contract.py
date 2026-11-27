@@ -144,8 +144,13 @@ def storage_block(data_root: Path, dataset_id: str, version: str, asset: dict[st
     from .catalog_index import storage_location
 
     loc = storage_location(data_root, dataset_id, version) or {"backend": "local"}
+    directory = (asset or {}).get("format") == "directory_manifest"
     out: dict[str, Any] = {"backend": loc["backend"], "provider": loc.get("provider"),
-                           "analysis_ready": True, "committed_at": loc.get("committed_at") if loc["backend"] == "r2" else None}
+                           "analysis_ready": not directory, "committed_at": loc.get("committed_at") if loc["backend"] == "r2" else None}
+    if directory:
+        out["capability"] = "raw_file_preservation"
+        if allowed:
+            out["raw_file_selector"] = {"item": "files", "asset": "manifest_relative_path"}
     if allowed and loc["backend"] == "r2" and asset:
         archive, _, member = asset["path"].partition(".zip/")
         if member:  # kaynak paketi içindeki kapsayıcı: arşiv nesnesi + /vsizip/
@@ -154,6 +159,9 @@ def storage_block(data_root: Path, dataset_id: str, version: str, asset: dict[st
                        gdal_path=f"/vsizip/{{/vsis3/{loc.get('bucket')}/{key}}}/{member}",
                        access_note="Arşiv içi üye: /vsizip/ + /vsis3/ (yetkili R2 kimliği) veya POST /api/data/v1/materialize ile "
                                    "yalnız ilgili üyelerin doğrulanmış önbellek kopyası.")
+        elif directory:
+            key = f"{loc.get('namespace') or ''}{loc['prefix']}payload/{asset['path']}"
+            out.update(bucket=loc.get("bucket"), object_key=key)
         else:
             key = f"{loc.get('namespace') or ''}{loc['prefix']}payload/{asset['path']}"
             out.update(bucket=loc.get("bucket"), object_key_prefix=key, gdal_path=f"/vsis3/{loc.get('bucket')}/{key}",

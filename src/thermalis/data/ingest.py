@@ -298,6 +298,23 @@ def _collection_candidate(folder: Path, data_root: Path) -> str | None:
     return f"raster_collection; declaration_ok {found['dataset_id']} {found['version']} (thermalis storage publish-collection)"
 
 
+def _declared_release_published(folder: Path, data_root: Path) -> tuple[str, str] | None:
+    """Paket dışı beyanı olan doğrudan yayın paketi bulutta işaretlenip yansıtılmış mı (aynı paket parmak izi)?"""
+    from ..cloud.catalog_sync import mirror_folder
+    from .declaration import declarations_dir
+
+    path = declarations_dir(data_root) / f"{folder.name}.json"
+    try:
+        d = json.loads(path.read_text(encoding="utf-8"))
+        mirror = mirror_folder(data_root, d["dataset_id"], d["version"])
+        record = json.loads((mirror / "version.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if record.get("source", {}).get("package_fingerprint") != d.get("manifest_sha256"):
+        return None
+    return d["dataset_id"], d["version"]
+
+
 def _bundle_candidate(folder: Path, data_root: Path) -> str | None:
     """ZIP aktarım paketi (arşiv + SHA-256 yan dosyası): otomatik kaydedilmez; beyan durumu bildirilir.
 
@@ -342,13 +359,17 @@ def assess(folder: Path, data_root: Path, settle_seconds: float = DEFAULT_SETTLE
         return candidate("INCOMPLETE", f"incomplete_marker: {markers}")
     if partial:
         return candidate("INCOMPLETE", f"partial_files: {partial[:5]}")
+    direct = None
     if (folder / "PACKAGE" / "MANIFEST.json").is_file() and not (folder / "PACKAGE" / "RELEASE_STATUS.json").is_file():
-        collection = _collection_candidate(folder, data_root)
-        if collection is not None:
-            return candidate("DIRECT_PUBLICATION", collection)
-    bundle_state = _bundle_candidate(folder, data_root)
-    if bundle_state is not None:
-        return candidate("DIRECT_PUBLICATION", bundle_state)
+        direct = _collection_candidate(folder, data_root)
+    if direct is None:
+        direct = _bundle_candidate(folder, data_root)
+    if direct is not None:
+        published = _declared_release_published(folder, data_root)
+        if published is not None:
+            return candidate("ALREADY_REGISTERED", f"{direct.split(';')[0]}; published {published[0]} {published[1]} (cloud commit)",
+                             published[0], published[1])
+        return candidate("DIRECT_PUBLICATION", direct)
     if not (folder / "PACKAGE" / "MANIFEST.json").is_file() or not (folder / "PACKAGE" / "RELEASE_STATUS.json").is_file():
         return candidate("NOT_A_PACKAGE", "PACKAGE/MANIFEST.json veya PACKAGE/RELEASE_STATUS.json yok")
     marker_ok, marker_error = read_ready_marker(folder)
